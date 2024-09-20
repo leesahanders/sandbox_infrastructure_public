@@ -1,0 +1,8 @@
+version: '1'
+
+services:
+  dockerimagesgithubactions:
+    image: sandboxdockerpm
+    build:
+      context: .
+      dockerfile: ./Dockerfile
