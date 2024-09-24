@@ -8,14 +8,14 @@ aws sts get-caller-identity
 
 AMI_ID=ami-00eeedc4036573771 #Ubuntu Server 22.04 LTS (HVM), SSD Volume Type
 INSTANCE_TYPE=t3.medium
-KEY_NAME=lisa-us-east-2
+KEY_NAME=add-your-key-name-without.pem-file
 SG=sg-0d81e0f63a21da47f
 EC2_NAME=lisa-connect
 OWNER=lisa.anders@posit.co
 #VPC=vpc-07d7d04d282d1e637
 
 # Pre-req: Create a key and copy to ~
-#chmod -R 600 ~/lisa-us-east-2.pem
+#chmod -R 600 ~/add-your-key-name.pem
 
 # Pre-req: Create a default VPC
 # Admin Console --> VPC --> Actions --> Create Default VPC
@@ -39,7 +39,7 @@ aws ec2 describe-instances --filters "Name=tag:Name,Values=${EC2_NAME}" --output
 EC2_DNS=ec2-18-189-29-186.us-east-2.compute.amazonaws.com
 
 # SSH into the instance - update the name to use your key
-ssh -i "~/lisa-us-east-2.pem" ubuntu@${EC2_DNS}
+ssh -i "~/add-your-key-name-without.pem" ubuntu@${EC2_DNS}
 ssh -i "~/${KEY_NAME}" ubuntu@${EC2_DNS}
 
 # After installation
