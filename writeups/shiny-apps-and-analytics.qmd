@@ -1,0 +1,48 @@
+---
+title: "Shiny apps and Analytics" 
+description: "Add instrumentation to Shiny apps for viewer tracking, interactions,etc"
+author: "Lisa"
+date: "2024-04-29"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+Adding instrumentation to your shiny apps can help you understand: 
+
+- User interaction 
+- Most viewed dashboards
+- What is being exported and by who
+- Trends with access over time
+- Time spent on interactions 
+
+Connect (as a software) isn't aggregating and making available user interaction information, though it is aggregating higher level app specific access auditing type information. However, advanced interaction instrumentation can be accomplished through adding tracking into the content itself using services like hotjar, google analytics, or saving into the log file or pushing into somewhere external.
+
+- There's more on the Connect API here: <https://solutions.posit.co/operations/connect-apis/>
+- Google analytics likely requires adding some JavaScript to your site which you can do with Shiny, <https://shiny.posit.co/r/reference/shiny/latest/builder.html>
+- This page in the Shiny docs give a walkthrough as well: <https://shiny.posit.co/r/articles/build/google-analytics/>
+- Tracking where within the Shiny app users are spending their time (which tab, etc) is interesting.
+- Monitoring user behavior with hotjar (paid): <https://www.r-bloggers.com/2022/06/r-shiny-hotjar-how-to-monitor-user-behavior-in-r-shiny-apps/>
+- Here's an article that outlines more free options: <https://www.appsilon.com/post/monitoring-r-shiny-user-adoption>
+- Javascript might need to be added to your site to support using google analytics: <https://shiny.posit.co/r/reference/shiny/latest/builder.html>
+- Various examples for tracking built in to Connect: <https://solutions.rstudio.com/data-science-admin/tracking/> and <https://github.com/sol-eng/connect-usage>
+- Video showing how to use the Connect API: <https://www.youtube.com/watch?v=0iljqY9j64U>
+- This heatmap package for seeing where users click I think would be cool to explore: [https://github.com/RinteRface/shinyHeatmap](https://github.com/RinteRface/shinyHeatmap)
+
+You can also add debug messages throughtout your shiny app and then use that with parsing the logs to estimate user interactions. 
+
+- Add debug messages with: <https://github.com/johnmyleswhite/log4r>
+- Learn about your user with client data: <https://shiny.rstudio.com/articles/client-data.html>
+
+

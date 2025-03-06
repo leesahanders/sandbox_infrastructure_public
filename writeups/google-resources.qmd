@@ -1,0 +1,202 @@
+---
+title: "Google data storage and R" 
+description: "Access to resources in Google, an exploration"
+author: "Lisa"
+date: "2024-06-21"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+# Overview 
+
+Access to resources in google (bigquery, drive, etc) will depend on where the user is connecting from: 
+
+- Local desktop: any method is fine 
+- Workbench / server web app based: "OOB" workflows or non-interactive
+- Connect / server web app non-interactive: Non-interactive only 
+
+# Interactive workflow 
+
+In order to get this working on Workbench, we need to use the OOB method so we don't have to mess with bouncing between URL's. 
+
+```r
+library(googlesheets4)
+library(gargle)
+library(googledrive)
+```
+
+
+```r
+# load/refresh existing credentials, if available
+# otherwise, go to browser for authentication and authorization (only works if not behind a proxy)
+drive_auth()
+
+options(gargle_oauth_client_type = "web")       # pseudo-OOB, use this when on Workbench, Connect, etc. 
+
+# options(gargle_oauth_client_type = "installed") # conventional OOB - this doesn't work for me, looks like it was deprecated in 2023
+```
+
+# Hacky workflow AKA Oauth user token re-discovered
+
+The idea is to make it render once, then use the token in the cache for future authentications. This will likely need to be periodically updated (think, annually) whenever the token expires. 
+
+This is the least recommended because of security challenges and having to manage an ecosystem of tokens, but it's hard to deny the appeal because it means a service account isn't needed!
+
+We'll need to change the location of the cached token to within the project so that when we deploy to Connect it will be included. Security here is tricky since the token is an exposed file, so care should be taken. 
+
+Reference: <https://gargle.r-lib.org/articles/non-interactive-auth.html#sidebar-1-deployment> 
+
+Step 1: Do this once interactively to get a token
+
+```r
+# Get a token interactively, but we can reuse it later
+
+# pseudo-OOB - this will bounce us out to a webpage, but we don't have to bounce back, we'll copy a code instead that we'll use like a password
+options(gargle_oauth_client_type = "web") 
+
+# designate project-specific cache
+options(gargle_oauth_cache = ".secrets")
+
+# do anything that triggers auth, in this case I want to tie it to my email identity
+options(gargle_oauth_email = "lisamaeanders@gmail.com")
+drive_auth(email = "lisamaeanders@gmail.com", cache = ".secrets", use_oob = TRUE)
+
+# use a 'read only' scope, so it's impossible to edit or delete files
+drive_auth(scopes = "drive.readonly")
+
+# This sets an option that allows gargle to use cached tokens whenever there’s a unique match:
+#options(gargle_oauth_email = TRUE)
+```
+
+Step 2: Downstream use we will reuse the token we got interactively earlier
+
+```r
+# Revise code so it uses the pre-authorized token 
+drive_auth(cache = ".secrets", email = "lisamaeanders@gmail.com", use_oob = TRUE)
+
+# now use googledrive
+drive_find(n_max = 1)
+```
+
+# When deployed in GCP use existing cloud credentials and go "keyless"
+
+When deployed already in GCP then there is an underlying service account already assigned to your infrastructure. The gotcha is that it is unlikely that the pre-existing service account has the "scope" IE the access to what you need. 
+
+Additional scopes need to be added to that service account identity, for example: 
+
+- That authentication might be successful for BigQuery, because the service account has the scope 'cloud-platform' 
+- That authentication won't be successful for drive, because it doesn't have the 'drive' scope
+
+Additional scope is added at the GCP compute instance level either when the instance is created or the instance can be stopped and the scope added. 
+
+Check for GCE credentials with (super curious what this returns for you, probably worth saving the output so it can be restored in the future if needed): 
+
+```r
+credentials_gce()
+```
+
+This also means that if you are GCE and getting errors that may be because it is using that service account for access, which doesn't have the correct scoping. You may need to remove the credentials for that account so it can try to create fresh credentials: 
+
+```r
+# removes `credentials_gce()` from gargle's registry
+gargle::cred_funs_add(credentials_gce = NULL)
+```
+
+Reference: <https://gargle.r-lib.org/articles/non-interactive-auth.html#embrace-credentials-available-in-certain-cloud-settings> 
+
+# Non-interactive workflow 
+
+Reference: <https://gargle.r-lib.org/articles/non-interactive-auth.html> 
+
+## Service account token
+
+Follow [these](https://gargle.r-lib.org/articles/get-api-credentials.html#service-account-token) steps: 
+
+- Create a service account 
+ - From the [GCP Console](https://console.cloud.google.com), in the target GCP Project, go to IAM & Admin > Service accounts
+ - Assign permissions: googledrive docs does not have any explicit roles, service account used to test bigrquery has roles BigQuery Admin and Storage Admin
+- After creating the service account, click on the three dots and "actions", manage keys, add key as json, download credentials as json file 
+ - This key is a secret! Consider how it should be protected
+- Provide path of json file to authentication
+- Grant the service account permissions to resources as needed (it doesn't inherit permissions) (For example, I had to visit https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=redacted to enable access for google drive and gogle sheets, which it gave me the link to in an error message for my specific project)
+
+Reference: <https://gargle.r-lib.org/articles/non-interactive-auth.html#provide-a-service-account-token-directly> and <https://gargle.r-lib.org/articles/get-api-credentials.html#service-account-token> 
+
+```r
+# use a service account token, like drive_auth(path = "/path/to/your/service-account-token.json")
+# drive_auth(path = Sys.getenv("google_drive_service_account"), scopes = "drive.readonly")
+# drive_auth(path = Sys.getenv("google_drive_service_account"), scopes = "drive.readonly")
+credentials_service_account(
+  #scopes = "https://www.googleapis.com/auth/userinfo.email",
+  path = Sys.getenv("google_drive_service_account")
+)
+# now use googledrive
+googledrive::drive_find(n_max = 5)
+```
+
+# Troubleshooting 
+
+```r
+# see user associated with current token
+drive_user()
+
+# List credentials 
+cred_funs_list()
+
+# force the OAuth web dance
+#drive_auth(email = NA)
+
+# provides an OAuth2 “situation report”, only relevant for oauth2 user tokens (not service accounts, etc)
+gargle_oauth_sitrep() 
+
+# check if a oauth cache is being used
+gargle::gargle_oauth_cache()
+
+# Default is to cache OAuth access credentials in the folder ~/.cache/gargle between R sessions
+
+# retrieve the currently configured OAuth client and API key, respectively.
+# without configuring auth these are null
+drive_oauth_client() 
+drive_api_key() 
+
+# see your token file in the cache
+list.files(".secrets/")
+
+# For troubleshooting purposes, you can set a gargle option to see verbose output about the execution of gargle::token_fetch():
+options(gargle_verbosity = "debug")
+
+# Gargle uses port 1410 for auth, check if it is blocked with (on nix systems): sudo lsof -i :1410
+```
+
+# Security
+
+Want to learn more about managing tokens? Read [this](https://gargle.r-lib.org/articles/managing-tokens-securely.html) 
+
+# Resources
+
+- Exploring non-interactive auth workflows would also be really useful (and set us up for successful deployments to Connect down the road): <https://gargle.r-lib.org/articles/non-interactive-auth.html>
+- Might also be useful to refer to the google docs on auth: <https://cloud.google.com/bigquery/docs/authentication>
+- This section is also really useful: <https://bigrquery.r-dbi.org/#authentication-and-authorization>
+- Likely OOB auth is needed, with options(gargle_oob_default = TRUE)
+- "If you are interacting with R within a browser (applies to RStudio Server, Posit Workbench, Posit Cloud, and Google Collaboratory), you need OOB auth or the pseudo-OOB variant. If this does not happen automatically, you can request it explicitly with use_oob = TRUE or, more persistently, by setting an option via options(gargle_oob_default = TRUE)."
+- Reference: <https://googledrive.tidyverse.org/reference/drive_auth.html>
+- Also really useful: <https://gargle.r-lib.org/articles/non-interactive-auth.html>
+- And another one that is really useful: <https://bigrquery.r-dbi.org/#authentication-and-authorization>
+- There's an example on this page using a json file downloaded from the google developers console: <https://googledrive.tidyverse.org/reference/drive_auth_configure.html#ref-examples>
+- From the google cloud console these are the options we have for generating credentials: API key, Oauth client ID, service account. 
+(<https://console.cloud.google.com/> -> API's and Services -> Create credentials)
+- Basically you (1) create a service account then (2) create a key (see <https://developers.google.com/identity/protocols/oauth2/service-account>)
+- Auth from web: <https://gargle.r-lib.org/articles/auth-from-web.html> 
+

@@ -1,0 +1,352 @@
+---
+title: "R projects set up and maintenance" 
+description: "The power of renv!"
+author: "Lisa"
+date: "2024-09-13"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+Have you ever tried to use someone else’s repo and run into issues with package installation and breaking package versions? Or tried to work on a really old repository and been foiled while trying to set it up?
+
+Projects have a standards problem - we need to realize that all the work we are doing exist in the framework of a project. By defining the elements of a project we can identify the parts that need to be made transparent and the tools (renv/venv) for making that happen. 
+
+What is a project?
+
+- Code, data files, config files, images/assets
+- Defined / reproducible environment
+- Defined language version
+- Defined package versions and requirements
+
+What it’s not: 
+
+- Your editor
+- The actual packages / repositories 
+- System dependencies 
+
+# Reading 
+
+Environment management:
+
+- Get started with renv in the RStudio IDE: [https://docs.posit.co/ide/user/ide/guide/environments/r/renv.html](https://docs.posit.co/ide/user/ide/guide/environments/r/renv.html)
+- You should be using renv: [https://www.youtube.com/watch?v=GwVx_pf2uz4](https://www.youtube.com/watch?v=GwVx_pf2uz4)
+- Using Public Package Manager : [https://support.rstudio.com/hc/en-us/articles/360046703913-FAQ-for-RStudio-Public-Package-Manager](https://support.rstudio.com/hc/en-us/articles/360046703913-FAQ-for-RStudio-Public-Package-Manager)
+
+## Reproducible package environments for R - At a glance
+
+Step 1: Use pre-compiled packages
+
+- Go to Public Package Manager
+- Click on Get Started -> Setup -> Distribution and select your OS -> Select Latest or Freeze and follow the instructions below the calendar.
+- For example:
+
+```r
+options(repos = c(REPO_NAME = "https://packagemanager.rstudio.com/all/latest"))
+```
+
+Step 2: Use environment tracking
+
+```r
+# Set up a new version controlled R project and install renv:
+install.packages("renv")
+library(renv)
+
+# Initialize your project with renv and take a snapshot:
+renv::init()
+renv::snapshot():
+
+# Update all packages, or revert back to an earlier snapshot:
+renv::update()
+renv::revert()
+
+# History is saved into version control:
+renv::history()
+```
+
+Step 3: Easy collaboration
+
+```r
+# Have your colleague configure their repository to match yours: 
+options(repos = c(REPO_NAME = "https://packagemanager.rstudio.com/all/latest")) 
+
+## Send a colleague the link to your project on git, they'll restore your environment with:
+renv::restore()
+```
+
+## R projects setup
+
+
+Setup the `renv` environment:
+
+```r
+renv::activate()
+renv::restore()
+```
+
+To run the app either open `app/app.R` and click the "Run App" button at the top of the IDE code pane or use:
+
+```r
+shiny::runApp("app")
+```
+
+## Deployment
+
+### Push Button
+
+Open `app/app.R` and use the blue publish icon in the upper right corner of the IDE code pane.
+
+### rsconnect package
+
+You can also deploy using the rsconnect package:
+
+```
+rsconnect::deployApp(
+  appDir = "app",
+  appTitle = "Shiny Penguins"
+)
+```
+
+### Git-backed
+
+Update the code, and then run:
+
+```r
+rsconnect::writeManifest("app")
+```
+
+Commit the new `manifest.json` file to the git repo along with the code.
+
+## Project updates
+
+Use [renv](https://rstudio.github.io/renv/articles/renv.html) to record the r package versions used
+
+Create a [`manifest.json` file](https://docs.posit.co/connect/user/git-backed/#creating-a-manifest-file-from-r) to support git-backed publishing
+
+## All about renv
+
+**Why use renv?**
+
+There is an excellent video by David Aja discussing why he started using renv at the 2022 RStudio Conference [here](https://www.rstudio.com/conference/2022/talks/you-should-use-renv/).  
+
+Ever had your code mysteriously stop working or start producing different results after upgrading packages, and had to spend hours debugging to find which package was the culprit? Ever tried to collaborate on code just to get stuck on trying to decipher various package dependencies? 
+
+[renv](https://rstudio.github.io/renv/articles/renv.html) helps you track and control package changes - making it easy to revert back if you need to. It works with your current methods of installing packages (`install.packages()`), and was designed to work with most data science workflows. 
+
+Who shouldn't use renv? 
+
+ - Package developers 
+ - ? 
+ 
+ # Terms 
+
+ - R Project - a special kind of directory of files and supporting functionality. 
+ - Package - a collection of functions beyond base R that developers can install and use.
+ - Library - a directory containing installed packages. 
+
+# Workflow 
+
+New project -> updates -> reverting -> advanced 
+
+# New project 
+
+Initialize your project with: 
+
+```
+library(renv)
+renv::init()
+```
+
+Look at the renv.lock file and see the information that has been captured about the packages supporting your project. 
+
+# Making updates
+
+Try installing a new package and then look at the renv.lock file. What did you expect to happen? What do you see? 
+
+Now try running `renv::snapshot()`. What do you see now when you look at the renv.lock file? 
+
+The renv lock file is updated by you when you run the command to snapshot. This means you can update packages, or install new packages, without changing your lock file. 
+
+# How to revert 
+
+Practice updating the packages your project relies on, each time saving to git. You can see the history of your changes with: 
+
+`renv::history()`
+
+If you want to revert back to an earlier snapshot you can do that with: 
+
+```
+## Revert to the most recent snapshot 
+renv::revert()
+
+## Alternatively we can revert to a specific snapshot by specifying the commit: 
+db <- renv::history()
+
+# choose an older commit
+commit <- db$commit[5]
+
+# revert to that version of the lockfile
+renv::revert(commit = commit)
+```
+
+Note: Currently, only Git repositories are supported by renv::history() and renv::revert().
+
+# Advanced renv 
+
+There are a couple other commands that can be used depending on your workflow that are useful to know about. 
+
+Say that your organization has a managed package host, for example Package Manager, and is using the [Shared Baseline](strategy). Meaning that all developers in the organization are pointed to a snapshot of available packages frozen to a particular date when the managing team had intentionally tested and made them available. On some cadence, let's say quarterly, the managing team goes through, performs testing again, and provides a new updated snapshot that is available for developers to switch to. There are a lot of advantages in switching with new features, resolved bugs, etc. 
+
+In order for developers to know that a new release has happened (that the local package dates are out of date in reference to the repo being pointed at) they can run: 
+
+    view(old.packages())
+
+The same process would be followed with then updating the packages, testing as needed, and then creating a new snapshot so the renv lock file is updated to the latest. This provides the added security that in case it does not pass testing the renv lock file will still point at the supported package versions and not the ones that caused the breakage. 
+
+One of the more recent releases of the renv package has included [having separate profiles for the project](https://rstudio.github.io/renv/articles/profiles.html). Meaning that a developer could have a production profile, a validation profile, and testing profile that can be easily switched between while working through their workflow towards deployment into production. 
+
+The renv.lock file can be manually changed to update the packages that are included with:
+
+`renv::modify()`
+    
+Remove packages that are no longer needed with: 
+
+`renv::clean()`
+
+Update everything to the latest for each package (according to the repository you are pointed at) with: 
+
+`renv::update()`
+
+# Troubleshooting 
+
+Running a diagnostic: 
+
+```r
+diagnostics(project = NULL)
+```
+
+Add more detail to logging: 
+
+```r
+options(renv.download.trace = TRUE)
+```
+
+If you are having particular issue with a package and it keeps being pulled in from the cache then doing a complete purge and reinstall can be useful: 
+
+```r
+renv::purge("stringr")
+renv::purge("stringi")
+install.packages("stringr")
+```
+
+`renv::purge` removes packages completely from the package cache (which may be shared across projects) rather than just removing the package from the project which is what `renv::remove` does. This can be useful if a package which had previously been installed in the cache has become corrupted or unusable, and needs to be re-installed.
+
+It may also be useful to verify both the OS you are currently useing as well as checking that the repository you are pointing towards is using the correct OS if it is pulling in the binaries. 
+
+
+For debian/ubuntu distributions: 
+```bash
+lsb_release -a
+```
+
+For other distributions (more broadly cross-linux compatible command): 
+```bash
+cat /etc/os-release
+```
+
+Check the repository being pointed to and update it to use the URL from your package manager instance: 
+```r
+options('repos')
+options(repos = c(REPO_NAME = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"))
+```
+
+Some additional options and settings: 
+
+- `Renv` comes with an over-ride option for the repository that could be recommended for users to run prior to re-initializing projects: <https://rstudio.github.io/renv/reference/config.html?q=OS#renv-config-repos-override>  
+
+  - It was discussed in [this stackoverflow post](https://stackoverflow.com/questions/65326540/how-to-change-r-repository-cran-from-renv-lock-to-get-packages-from-an-internal) with this example (run from console): `Sys.setenv("RENV_CONFIG_REPOS_OVERRIDE" = "your_private_package_repository_url")`  
+
+- As of renv 0.13.0 where it can now construct a prefix based on fields within the system's /etc/os-release file: <https://rstudio.github.io/renv/reference/paths.html#sharing-state-across-operating-systems>
+
+# Library paths 
+
+Find where your library is: 
+
+```r
+> .libPaths()
+[1] "/home/sagemaker-user/R/x86_64-pc-linux-gnu-library/4.2"
+[2] "/opt/R/4.2.1/lib/R/library" 
+```
+
+For example when working in a system that has a mounted share drive then would want to check that libraries are being written to that share so you get persistence. Typically this means writing to inside the home directory. Check mounted drives with: `df -h`
+
+The next thing to check is permissions, for example with this command that shows full directory tree permissions 
+
+```bash
+namei -l /home/sagemaker-user/test/r-examples
+```
+
+# Migrations
+
+Consider using the script in this gist to migrate R and Python libraries: <https://gist.github.com/edavidaja/5996ffeb042df2642c77c065c07f023d> 
+
+```r
+# Delete the existing libraries
+unlink("renv/library", recursive=TRUE)
+
+# Set repo address
+options(repos = c(REPO_NAME = "https://colorado.posit.co/rspm/all/__linux__/jammy/latest"))
+
+# (optional) add repo address to r profile
+usethis::edit_r_profile()
+
+# Restart R session
+.rs.restartR()
+
+# Re-install libraries
+renv::restore(rebuild = TRUE)
+```
+
+
+```bash
+# Activate the existing venv
+source .venv/bin/activate
+
+# Make note of all installed packages
+python -m pip freeze > requirements-freeze.txt
+
+# Deactivate the venv and delete
+deactivate
+rm -rf .venv/
+
+# Create a new virtual environment
+python -m venv .venv
+source .venv/bin/activate 
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r requirements-freeze.txt
+```
+
+# Repositories 
+
+Check your current repo with: `options('repos')`
+
+For example, you might see: `https://packagemanager.rstudio.com/all/latest` or `https://cran.rstudio.com/`. 
+
+Change your repo with: `options(repos = c(REPO_NAME = "https://colorado.rstudio.com/rspm/cran/__linux__/focal/2022-06-29"))` or `options(repos = c(REPO_NAME = "https://packagemanager.rstudio.com/all/latest"))`
+
+
+## Troubleshooting 
+
+Bioconductor and Mass and R version: <https://forum.posit.co/t/mass-not-available-for-r-4-3-3/188156/2> 
+

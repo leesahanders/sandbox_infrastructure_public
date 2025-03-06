@@ -1,0 +1,401 @@
+---
+title: "Parallelization in R" 
+description: "Resources for scaling out your code"
+author: "Lisa"
+date: "2023-12-08"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+For compute heavy and long running jobs, HPC can come to the rescue!
+
+- HPC clusters typically have far more compute power than a normal server or a laptop
+- HPC clusters offer an infrastructure with significant compute power that can be leveraged as needed. So-called “jobs” on HPC have a well-defined start date but even more importantly so an end date. 
+
+As a user remember though: 
+
+- It is your responsibility to develop performant and fast code since you are working on a shared resource - there is no excuse to not optimize for performance
+- Parallelization can speed up execution when done right, but there is no guarantee
+- “With great power comes great responsibility” - Spider Man
+
+# Expectations 
+
+Pros
+
+- CAN speed up otherwise long running tasks
+- CAN optimize and more efficiently use resources
+
+Cons
+
+- CAN hog computing resources delay other scheduled jobs/access requests
+- CAN prevent others from getting work done (all requested resources are guaranteed and exclusively used by you)
+- CAN mask bad code design choices
+- CAN act as a denial-of-service attack to other systems
+
+# Getting started 
+
+Read: 
+
+- Learning to write code in parallel: <https://forum.posit.co/t/learning-to-write-code-in-parallel/186992/4>
+
+- Depending on how your CPU is being overloaded (a single thread, versus multiple threads), it may be worth using the Parallel package to allow for multi-threading in your application. More information on this can be found here:
+<https://www.rdocumentation.org/packages/parallel/versions/3.6.2>  
+
+- Resources in this Article for getting started:
+<https://dept.stat.lsa.umich.edu/~jerrick/courses/stat701/notes/parallel.html>
+
+- Workbench and HPC session: <https://github.com/sol-eng/Workbench-HPC-Webinar?tab=readme-ov-file> 
+
+- Parallel: <https://www.davidzeleny.net/wiki/doku.php/recol:parallel> 
+
+- doparallel: <https://www.r-bloggers.com/2024/01/r-doparallel-a-brain-friendly-introduction-to-parallelism-in-r/> 
+
+- Parallelization tutorial: <https://berkeley-scf.github.io/tutorial-parallelization/parallel-R.html> 
+
+# When sessions are crashing 
+
+It would help to see the following outputs run from your Linux server when you experience the issue:
+
+```bash
+top
+free -h 
+```
+
+Also, share a copy of your `/etc/rstudio/profiles` file for review for any inconsistencies. 
+
+# Things to watch out for 
+
+- Some parts of your code are going to be slow, no matter how many cores! - Roger / Amdahl’s Law
+- Profile your code in order to understand base performance with [profvis](https://rstudio.github.io/profvis/)
+- Unless built-in, often parallelization means subtasks where logs need to be manually captured and passed back (for troubleshooting if things go wrong)
+- Overhead / house keeping costs - Additional resources and time are needed to manage the parallel execution of a task. ie. coordinating communication between different processing units, syncing access to shared resources, managing the distribution of data, etc.
+
+# Making code faster 
+
+- Make the code better: Assess performance and find bottlenecks 
+- Make the machine better: Add more cores / machines 
+
+# Terminology 
+
+- Thread: An execution context 
+- Process: The resources associated with a computation 
+- Core: Independent CPU's (often discussed as "number of cores")
+- Socket: The interface between the CPU and the motherboard (for example with two sockets and 8 cores in each socket there are a total of 16 physical cores on the server)  
+- CPU: Central Processing Unit
+
+Use `lscpu` or `cat /proc/cpuinfo` to get your CPU architecture details
+
+Reference: <https://www.golinuxcloud.com/processors-cpu-core-threads-explained/> 
+
+# Improve performance by profiling your code 
+
+## profvis
+
+```r
+library(profvis)
+library(ggplot2)
+library(shiny)
+#library(deSolve)
+
+# Simple example
+profvis({
+  data(diamonds, package = "ggplot2")
+  
+  plot(price ~ carat, data = diamonds)
+  m <- lm(price ~ carat, data = diamonds)
+  abline(m, col = "red")
+})
+```
+
+More complex example: 
+
+```r
+profvis({
+  # generate a dataset
+  data(diamonds, package = "ggplot2")
+  
+  # save it 
+  write.csv(diamonds, "diamonds.csv")
+  
+  # load it
+  csv_diamonds <- read.csv("diamonds.csv")
+  
+  # summarize
+  summary(diamonds)
+  
+  # plot it  
+  plot(price ~ carat, data = csv_diamonds)
+  m <- lm(price ~ carat, data = csv_diamonds)
+  abline(m, col = "red")
+  
+  #create histogram of values for price
+  ggplot(data=csv_diamonds, aes(x=price)) +
+    geom_histogram(fill="steelblue", color="black") +
+    ggtitle("Histogram of Price Values")
+  
+  #create scatterplot of carat vs. price, using cut as color variable
+  ggplot(data=diamonds, aes(x=carat, y=price, color=cut)) + 
+    geom_point()
+  
+  #create scatterplot of carat vs. price, using cut as color variable
+  ggplot(data=diamonds, aes(x=carat, y=price, color=cut)) + 
+    geom_point()
+  
+  # Examples from: https://www.statology.org/diamonds-dataset-r/#:~:text=The%20diamonds%20dataset%20is%20a,the%20diamonds%20dataset%20in%20R. 
+})
+```
+
+Shiny app example: 
+
+```r
+
+#profvis({runApp()})
+
+#profvis({runApp(appDir = "./test_profvis/")})
+
+profvis({runApp(appDir = ".")})
+```
+
+## Other packages
+
+- bench
+- microbenchmark 
+
+# Taking advantage of compute resources with parallelization in R
+
+## Taking advantage of native parallelization
+
+Use packages like [data.table](https://cran.r-project.org/web/packages/data.table/vignettes/datatable-intro.html) that implement parallelism natively
+
+```r
+library(data.table)
+
+getDTthreads()
+DT = as.data.table(iris)
+DT[Petal.Width > 1.0, mean(Petal.Length), by = Species]
+```
+
+## Explicitly programming parallelization 
+
+Read more: <https://towardsdatascience.com/getting-started-with-parallel-programming-in-r-d5f801d43745> 
+
+### futureverse 
+
+Read more: <https://www.futureverse.org/> 
+
+```r
+library(future)
+plan(multisession)
+
+## Evaluate an R expression sequentially
+y <- slow_fcn(X[1])
+
+## Evaluate it in parallel in the background
+f <- future(slow_fcn(X[1]))
+y <- value(f)
+
+## future.apply: futurized version of base R apply
+library(future.apply)
+y <-        lapply(X, slow_fcn)
+y <- future_lapply(X, slow_fcn)
+
+## furrr: futurized version of purrr
+library(furrr)
+y <- X |>        map(slow_fcn)
+y <- X |> future_map(slow_fcn)
+
+## foreach: futurized version (modern)
+library(foreach)
+y <- foreach(x = X) %do%       slow_fcn(x)
+y <- foreach(x = X) %dofuture% slow_fcn(x)
+
+## foreach: futurized version (traditional)
+library(foreach)
+doFuture::registerDoFuture()
+y <- foreach(x = X) %do%    slow_fcn(x)
+y <- foreach(x = X) %dopar% slow_fcn(x)
+```
+
+
+### parallel 
+
+Example from: <https://towardsdatascience.com/getting-started-with-parallel-programming-in-r-d5f801d43745>
+
+```r
+library(parallel)
+
+# Generate data
+data <- 1:1e9
+data_list <- list("1" = data,
+                  "2" = data,
+                  "3" = data,
+                  "4" = data)
+
+# Single core
+time = Sys.time()
+
+time_benchmark <- system.time(
+  lapply(data_list, mean)
+)
+single_core_time = difftime(Sys.time(), time)
+
+
+# Detect the number of available cores and create cluster
+time = Sys.time()
+
+cores_avail= detectCores()
+
+cl <- parallel::makeCluster(detectCores())
+# Run parallel computation
+time_parallel <- system.time(
+  parallel::parLapply(cl,
+                      data_list,
+                      mean)
+)
+
+multiple_core_time = difftime(Sys.time(), time)
+
+# Close cluster
+parallel::stopCluster(cl)
+
+
+print(single_core_time)
+print(multiple_core_time)
+print(cores_avail)
+```
+
+Running sequentially took 18.33 seconds. Running in parallel shortened that to 4.99 seconds. 
+
+### parallely (part of futureverse)
+
+Read more: <https://parallelly.futureverse.org/> 
+
+```r
+library(parallelly)
+parallelly::availableCores()
+```
+
+### foreach and futureverse 
+
+```r
+library(foreach)
+library(doFuture)
+
+years = 2024
+
+plan(multisession, workers = 20)
+results <- foreach(i=years, 
+                   .combine = rbind) %dofuture% {
+                     get_api_stats(yr=i, tmt=tmt, product = "litter")}
+```
+
+### future.apply
+
+Before: 
+
+```r
+table(okay2 <- apply(tab2, 1, function(x) {...
+```
+
+After: 
+
+```r
+library(future.apply)
+plan(multisession)
+
+table(okay2 <- future_apply(tab2, 1, function(x) {...
+```
+
+### purrr
+
+Before: 
+
+```r
+library(tidyverse)
+sales_data_tbl %>%
+  nest(data=c(date, value)) %>%
+  mutate(model = purrr::map(data, function(df) {
+    lm(value ~month(date) + as.numeric(date) data=df)
+  })) 
+```
+
+After: 
+
+```r
+library(tidyverse)
+library(purrr)
+sales_data_tbl %>%
+  nest(data=c(date, value)) %>%
+  mutate(model = furrr::map(data, function(df) {
+    lm(value ~month(date) + as.numeric(date) data=df)
+  })) 
+```
+
+
+### foreach and doParallel
+
+```r
+library(foreach)
+library(doParallel)
+
+cl <- makeCluster(20)
+registerDoParallel(cl)
+results <- foreach(i=years, 
+                   .combine = rbind) %dopar% {
+                     get_api_stats(yr=i, tmt=tmt, product = "litter")}
+stopCluster(cl)
+```
+
+### clustermq
+
+Lifesaver, when working in a HPC environment. 
+
+```r
+library(foreach)
+library(clustermq)
+
+n_cores <- parallel::detectCores() - 1
+options(clustermq.scheduler="multicore")
+getOption("clustermq.scheduler")
+
+register_dopar_cmq(n_jobs = n_cores)
+foreach(i = seq_len(n_cores)) %dopar% sqrt(i)
+```
+
+The future of clustermq: crew/mirai/nanonext 
+
+## But what about Python? 
+
+- [dask-jobqueue](https://docs.dask.org/en/stable/deploying-hpc.html)
+- [ray](https://docs.ray.io/en/latest/cluster/vms/user-guides/community/slurm.html) 
+
+# References
+
+- https://colorado.posit.co/rsc/parallel_thinking/Parallel_Thinking.html#/title-slide
+- https://edavidaja.github.io/parallelooza/#/parallelooza
+- https://github.com/edavidaja/parallelooza
+- Shiny apps on Connect that feature long running jobs https://wlandau.github.io/crew/articles/shiny.html
+- workbench jobs and AWS batch: https://github.com/wlandau/crew.aws.batch
+
+# Further reading 
+
+- Clustermq example: [https://michaelmayer.quarto.pub/clustermq/example.html](https://michaelmayer.quarto.pub/clustermq/example.html)
+- Shiny app with HPC example: <https://github.com/michaelmayer2/penguins-hpc> and <https://docs.google.com/presentation/d/1tDGm2Y8emaLXeyNWxScGWHVNWyyjkICsShz5xxc0kLg/edit#slide=id.g25ca9e5dea3_0_25> 
+- Slurm GPU training by Michael: 
+ - Slides: [https://docs.google.com/presentation/d/1ktldUhNRbMKpo9NOQCWgmJJjgNdCrpcnQ0BSQSP8d3k/edit](https://docs.google.com/presentation/d/1ktldUhNRbMKpo9NOQCWgmJJjgNdCrpcnQ0BSQSP8d3k/edit)
+ - Git repository: [https://github.com/michaelmayer2/merck-slurm-gpu-training/](https://github.com/michaelmayer2/merck-slurm-gpu-training/) 
+- Go fastR: High Performance Computing with R Workshop:  [https://luwidmer.github.io/fastR-website/](https://luwidmer.github.io/fastR-website/)
+- HPC Training: <https://github.com/sol-eng/Workbench-HPC-Webinar> and slides: <https://docs.google.com/presentation/d/1gawEL2cVq7LoktfCjG55pTAYWhy0JYlskZMl5MaYD7I/edit#slide=id.p> 
+

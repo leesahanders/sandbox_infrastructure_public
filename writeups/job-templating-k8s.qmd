@@ -1,0 +1,102 @@
+---
+title: "Job templating in Kubernetes" 
+description: "Add custom application labels using job templates for Posit Workbench with k8s"
+author: "Lisa"
+date: "2024-08-21"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+This short writeup addresses a need to add an additional label to Workbench sessions started in a kubernetes environment. Specifically this was for an environemnt where an external Workbench server was launching sessions into a Kubernetes cluster. The recommended way to do this is to use job templating. 
+
+## Job templating for custom labels for Posit Workbench with k8s
+
+These are the granular steps for taking advantage of [kubernetes object templating](https://docs.posit.co/ide/server-pro/job_launcher/kubernetes_plugin.html#kube-templating) that would work with an external Workbench instance launching into k8s: 
+
+
+1. Add to `launcher.kubernetes.conf`, `use-templating = 1`
+2. Use the launcher CLI to create the `job.tpl` and `service.tpl` files (see below for an example) 
+3. Confirm that the version called out in  `job.tpl` and `service.tpl` (using `head job.tpl` and `head service.tpl` for example) are compatible with your workbench version (version 2.3.1 is latest)
+4. Create  `rstudio-library-templates-data.tpl` - for now this is a helm-only construct so it will need to be copied from the helm output ([helm repo](https://github.com/rstudio/helm/tree/main/charts/rstudio-workbench)) (see example below for doing this with the `helm template` command) 
+5. Copy `job.tpl`, `service.tpl`, and `rstudio-library-templates-data.tpl` into the launcher scratch directory on the host machine (in this case your Workbench server outside of k8s) (see below for default for where this is located) and make sure that rstudio-server has read/write access
+
+For adding the new labels/values, here are good options:
+
+- Modify `rstudio-library-templates-data.tpl` directly (either in the header bit, or lower under values/labels)
+- Modify the values in the helm values file ([example](https://github.com/rstudio/helm/blob/5fb2ad5cecf84680c8e64e4d8123df9d4e0c1cc7/charts/rstudio-workbench/values.yaml#L82-L109))
+- Recommended: Add the values at time of making the template, IE with `--set launcher.templateValues.job.labels.test=value \` (see below)
+
+
+From talking with a colleague they shared this example using helm to create the template with the added label values:
+
+```
+helm template my-release rstudio/rstudio-workbench \
+ --set launcher.useTemplates=true \
+ --set launcherPem=test \
+ --set session.defaultConfigMount=false \
+ --set launcher.templateValues.job.labels.test=value \
+ --set launcher.templateValues.job.labels.other=something-else \
+ | less
+```
+In that helm example:
+
+- `session.defaultConfigMount=false` prevents defining volumes and volumeMounts that are only relevant for the helm chart
+- `launcherPem=test` speeds up templating
+- `launcher.useTemplates=true` turns on templating (instead of job json overrides)
+
+**What if things go wrong?**
+
+The rstudio-kubernetes-launcher CLI can [verify templates](https://docs.posit.co/ide/server-pro/job_launcher/kubernetes_plugin.html#validating-templates) now!
+
+**Playing with the rstudio-kubernetes-launcher CLI:**
+
+```bash
+/usr/lib/rstudio-server/bin/rstudio-kubernetes-launcher --help
+/usr/lib/rstudio-server/bin/rstudio-kubernetes-launcher --generate-templates --scratch-path=/tmp/hello
+```
+
+**Default scratch path:**
+
+```
+ # mount into the default scratch-path
+ - name: session-templates
+  mountPath: "/var/lib/rstudio-launcher/Kubernetes/rstudio-library-templates-data.tpl"
+  subPath: "rstudio-library-templates-data.tpl"
+ - name: session-templates
+  mountPath: "/var/lib/rstudio-launcher/Kubernetes/job.tpl"
+  subPath: "job.tpl"
+ - name: session-templates
+  mountPath: "/var/lib/rstudio-launcher/Kubernetes/service.tpl"
+  subPath: "service.tpl"
+```
+
+## Another approach using json over-rides on Posit Workbench with k8s
+
+Potentially json over-rides could work but my understanding is that this would overwrite ALL labels. 
+
+use this to add a label:
+```{.bash filename="/etc/rstudio/launcher.kubernetes.profiles.conf"}
+job-json-overrides="/spec/template/spec/labels":"/etc/rstudio/labels"
+```
+
+```{.bash filename="/etc/rstudio/labels"}
+[
+  {
+    "applicationid": "workbench",
+    "label": ["value"]
+  }
+]
+```
+

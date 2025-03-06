@@ -1,0 +1,50 @@
+---
+title: "Dealing with ssh keys with ansible and pulumi" 
+description: "A very specific brief learning"
+author: "Lisa"
+date: "2024-10-02"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+Very specific learning for the day but if you are trying to run pulumi-with-ansible IAC and in a world of ssh key pain this bypasses the ssh-agent: 
+
+Pulumi.yaml
+```
+  keypath: "~/.ssh/mykey.pem"
+```
+
+__main__.py
+```
+pulumi.export('keypath', config.require("keypath"))
+```
+
+playbook.yml
+```
+    ansible_ssh_private_key_file: "{{ keypath }}"
+```
+
+Or just add things properly to your ssh-agent (even better, start using the config): 
+
+```
+# Set permissions 
+chmod -R 400 ~/.ssh/mykey.pem # 600 is also fine
+
+# Add keys to ssh-agent 
+ssh-agent -s
+eval `ssh-agent -s`
+ssh-add ~/.ssh/mykeyaws.pem
+ssh-add ~/.ssh/mykeyazure.pem
+```

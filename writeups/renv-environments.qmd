@@ -1,0 +1,1234 @@
+---
+title: "Debugging R Package Environments (renv): A long winded writeup" 
+description: "An overview of environment management in R and a comprehensive summary of the different options that can be configured to support different workflows"
+author: "Lisa"
+date: "2024-06-21"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+```r
+#| echo: false
+#| include: false
+
+library(renv)
+```
+
+This vignette is an overview of environment management in R and a comprehensive summary of the different options that can be configured to support different workflows. Environment management in R is intentionally complex, so figuring out where to even start when debugging can be a challenge. This vignette also goes into specific scenarios that might come up with environment management and recommendations. 
+
+## At a glance
+
+Overview of the R environment: 
+
+```{mermaid}
+graph LR
+    
+    subgraph ENV[Working R Environment]
+    
+    subgraph CONFIG[Config]
+    
+      subgraph LOCAL[Local R Config]
+      RENVIRON[.Renviron]
+      RPROFILE[.Rprofile]
+      end
+    
+      subgraph SERVER[Server R Config]
+      SRENVIRON[Renviron.site<br/>etc/R.home/Renviron.site]
+      SRRPROFILE[Rprofile.site</br>etc/Rprofile.site]
+      
+        subgraph W[Posit Workbench]
+        REPOS["repos.conf"]
+        RSESSION["rsession.conf"] 
+        end
+    
+      end
+      
+      LOCAL-- User settings <br/>override<br/>global settings --> SERVER
+      
+      subgraph RENVCONFIG[Renv Config]
+      RENVPROJECT[Project Settings<br/>renv/settings.json]
+      
+        subgraph RENVUSER[Config: User Level Settings]
+        RENVUR["User Renviron<br/>~/.Renviron"]
+        RENVRI["R installation<br/>etc/Rprofile.site"]
+        RENVP["Project<br/>.Rprofile"]
+        end
+      end      
+      
+    end
+    
+    subgraph LIBRARY[Package Library Path]
+
+      USERLIBRARY["User<br/>R_HOME/library<br/>~/R"]
+
+      SITELIBRARY[Site<br/>R_HOME/site-library]
+      
+      subgraph RENV[Renv]
+      direction TB
+      CACHE["Cache<br/>~/.cache/R/renv/"]
+      PROJECTCACHE["Project Cache<br/>~/renv/library/"]
+      CACHE-- Unless isolated, symlink --> PROJECTCACHE; 
+      SHAREDCACHE[Cross-User Shared Cache]
+      end
+
+    end  
+    
+    LIBRARY --> CONFIG
+    CONFIG --> LIBRARY
+    
+    end
+    
+    subgraph REPOSITORY[Package Repository Source]
+      direction TB
+    
+      subgraph PPM[Posit Package Manager]
+      RE[Package Binaries]
+      RP[Package Sources]
+      end
+    
+      CRAN[CRAN/Pypi/BioConductor/etc]
+    
+      CRAN -- Posit sync service --> PPM;
+
+    end
+    
+    UA[User-Agent request header]-- Binary requested<br/>Details: OS, R version -->PPM
+    
+    UA --> ENV
+
+```
+
+# Introduction
+
+## Environment Management strategies
+
+There are severeal common [environment management strategies](https://solutions.posit.co/envs-pkgs/environments/). Some strategies can be more prone to pain and challenges later than others. Thinking about the appropriate strategy for your organization in advance can save you from a lot of hurt later.
+
+![alt text](https://solutions.posit.co/envs-pkgs/environments/reproduce/reproducibility-strategies-and-danger-zones.png)
+
+Image: <https://solutions.posit.co/envs-pkgs/environments/reproduce/reproducibility-strategies-and-danger-zones.png>
+
+| [Snapshot and Restore](https://solutions.posit.co/envs-pkgs/environments/snapshot/)                                                                                                                                                                                                                                                                 | [Shared Baseline](https://solutions.posit.co/envs-pkgs/environments/shared/)                                                                                                                                                                                                                                                                                                                                                                               | [Validated](https://solutions.posit.co/envs-pkgs/environments/validated/)                                                                                                                   |
+|------------------------|------------------------|------------------------|
+| All developers are responsible for their own environment management, and enabled for making their enviornments reproduceable through the use of renv's `snapshot()` capability. Users can freely access and install packages while following a package-centric workflow. Users are responsible for recording their dependencies for their projects. | All developers in the organization are pointed to a snapshot of available packages frozen to a particular date when the managing team had intentionally tested and made them available. On some cadence, let's say quarterly, the managing team goes through, performs testing again, and provides a new updated snapshot that is available for developers to switch to. There are a lot of advantages in switching with new features, resolved bugs, etc. | Similar to the shared baseline stratgey the difference is that changes to the package environment go through an approval and auditing process, and access to packages is strictly enforced. |
+
+## Understanding R's startup behavior
+
+R has a lot of flexibility for different workflows, which is a great thing. However, it also means that the answer to trying to change specific pieces of that customized behavior can have complex answers that depend on example what has been implemented in your environment.
+
+This diagram posted by [Thomas Lin Pedersen on X](https://twitter.com/thomasp85/status/961553618196418560) showing the R startup flowchart went viral, and for good reason: 
+
+![R Startup diagram by [Thomas Lin Pedersen on X](https://twitter.com/thomasp85/status/961553618196418560)](img/thomasp85.jpg)
+
+Posit [provides precompiled R binaries](https://docs.posit.co/resources/install-r/) for anyone to use, free of charge. The [public respository](https://github.com/rstudio/r-builds) can be visited to understand how they are compiled. 
+
+## Where packages come from
+
+Packages can come from a couple places, a tarball, version control location, but most commonly is the URL of the repository that the package will be installed from. The package source can be set by assigning an environment variable with the desired location. More than one repository can be specified, for example with: 
+
+```r
+repos <- c(CRAN = "https://cloud.r-project.org", WORK = "https://work.example.org")
+options(repos = repos)
+```
+
+Setting it this way would be a "one off" that would change the "package repository" for the current session. In order to persist the change of repository location, and other settings, various configurations can be applied. 
+
+Typically "package repository", among developers, is used to refer to R and Python package repositories (not to be confused with linux package repositories, etc). Most R and Python package managers serve only R and Python packages, and don't handle additional management of system dependencies or packages, which would be risky in a shared server system where conflicts could come up.
+
+The most famous R and Python package repositories are:
+
+-   [CRAN](https://cran.r-project.org/) - hosting public packages, checking, distributing, and archiving R packages for various platforms
+-   [BioConductor](https://www.bioconductor.org/) - hosting public packages, checking, distributing, and archiving R packages for various platforms
+-   [PyPi](https://pypi.org/) - hosting public packages, checking, distributing, and archiving Python packages for various platforms
+
+Posit Package Manager can be deployed within your organization, completely air-gapped, or with a sync service to Posit, to receive package sources and binaries. 
+
+-   [Posit Package Manager](https://pypi.org/) - hosting public packages, hosting internal packages, checking, distributing, blocking vulnerabilities, and archiving R and Python packages for various platforms
+
+## Server vs individual environments
+
+Developers can work locally on their local machines, in a cloud environment, or using a shared server environment (for example, by using Posit Workbench). 
+
+Having multiple developers working on a centralized server using Posit Workbench has a couple primary advantages:
+
+- Better IT oversight and security with encrypted traffic and restricted IP addresses
+- Additional configuration options and settings 
+- Auditing and logging 
+- Less time spent on software installation and management
+- Access to larger compute resources
+- Options for standardizing settings across all users
+
+When sharing a server environment users will sign in separately and work will live in separate user home directories. Workbench can act as an auth client to different data sources. However, the shared system dependencies will need to be carefully managed to support the different workflows that the users are doing. 
+
+## The renv package
+
+Renv is an open source R package that allows users to better manage their package environments. 
+
+Ever had your code mysteriously stop working or start producing different results after upgrading packages, and had to spend hours debugging to find which package was the culprit? Ever tried to collaborate on code just to get stuck on trying to decipher various package dependencies? 
+
+[renv](https://rstudio.github.io/renv/articles/renv.html) helps you track and control package changes - making it easy to revert back if you need to. It works with your current methods of installing packages (`install.packages()`). It comes with a great degree of flexibility and supports a wide range of user workflows.
+
+Renv assumes:
+
+-   Users are familiar with a version control system, like git
+-   Users are following a project-centric methodology where the goal is to simultaneously work on different projects with different package environment needs
+
+![The [Renv workflow](https://rstudio.github.io/renv/articles/renv.html)](https://rstudio.github.io/renv/articles/renv.png)
+
+There is an excellent video by David Aja discussing why he started using renv at the 2022 RStudio Conference here: <https://www.rstudio.com/conference/2022/talks/you-should-use-renv/>
+
+Usefully, [renv doesn't have system requirements](https://p3m.dev/client/#/repos/cran/packages/renv/616174/overview?search=renv#package-details:~:text=1.14%20MB-,SYSTEM%20REQUIREMENTS,-none). 
+
+### The lock file
+
+The renv lock file is what is generated that allows the environment to be recreated on another system. It might look something like this: 
+
+<details>
+
+<summary>Click here to expand an example renv lock file</summary>
+
+```
+{
+  "R": {
+    "Version": "4.3.2",
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://p3m.dev/cran/latest"
+      }
+    ]
+  },
+  "Packages": {
+    "MASS": {
+      "Package": "MASS",
+      "Version": "7.3-60",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "R",
+        "grDevices",
+        "graphics",
+        "methods",
+        "stats",
+        "utils"
+      ],
+      "Hash": "a56a6365b3fa73293ea8d084be0d9bb0"
+    },
+    "Matrix": {
+      "Package": "Matrix",
+      "Version": "1.6-4",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Requirements": [
+        "R",
+        "grDevices",
+        "graphics",
+        "grid",
+        "lattice",
+        "methods",
+        "stats",
+        "utils"
+      ],
+      "Hash": "d9c655b30a2edc6bb2244c1d1e8d549d"
+    },
+    "yaml": {
+      "Package": "yaml",
+      "Version": "2.3.7",
+      "Source": "Repository",
+      "Repository": "RSPM",
+      "Hash": "0d0056cc5383fbc240ccd0cb584bf436"
+    }
+  }
+}
+```
+
+</details>
+
+It's in a json format. There are two main sections: 
+
+ - Header : This is where the R version is declared as well as package sources (if declared)
+ - Packages : This is where the specific package versions are specified, as well as various metadata
+
+For an overview on package sources, see the [Package Sources vignette](https://rstudio.github.io/renv/articles/package-sources.html).
+
+The package source can be set for three different scenarios: 
+
+- `RemoteType` - packages installed by devtools, remotes, and pak
+- `Repository ` - packages installed from a package repository; CRAN, Posit Package Manager, etc
+- `biocViews` - packages installed from BioConductor repositories
+
+Let's understand how the `Repository` is set. Notice how under each package the repository is declared like this: 
+
+```
+Repository: <a name>,
+```
+
+The `Repository: <a name>` field is used to denote the repository that the package was originally installed from. Most commonly it might like look: 
+
+- `Repository: CRAN` - This indicates that the package was installed from a repository call CRAN, likely a CRAN mirror
+- `Repository: RSPM` - This indicates that the package was installed from Posit Package Manager, regardless of whether it was a binary or source package 
+
+
+There is a fail over order for determining the correct URL: 
+
+```{mermaid}
+graph TD;
+    A(Assign repository URL) -->lock; 
+    
+    subgraph lock[renv.lock file]
+    B[Repository name in package definition]
+    c[Repository URL in header]
+    end
+    
+    lock -- Repository name in header -->D;
+    D[Select matching URL] -->END;
+    lock -- Repository name not in header -->E;
+    
+    E{Check env for first repository listed <br> for required package version} -- package exists -->F;
+    F[Select first repository URL] -->END; 
+    E -- package does not exist -->G;
+
+    G{Check env for .. repository listed <br> for required package version} -- package exists -->H;
+    H[Select .. repository URL] -->END; 
+    G -- package does not exist -->I;
+    
+    I{Check env for last repository listed <br> for required package version} -- package exists -->J;
+    J[Select last repository URL] -->END; 
+    I -- package does not exist -->K;
+    
+    K{Check the cellar} -- package exists -->L;
+    L[Select cellar] -->END; 
+    K -- package does not exist -->M;    
+    
+    M[Package does not exist, unable to restore]
+    
+    END(End)
+```
+
+In words, for a package repository declaration of `Repository: RSPM`, if there happens to be a repository called `RSPM` in the repository list, then that repository will be preferred when restoring the package; otherwise, renv will check each repository from first to last for the required version of each package. The [renv package cellar](https://rstudio.github.io/renv/articles/package-sources.html#the-package-cellar) is meant to help with packages that aren't available or accessible for installation. The cellar can be set to point at tarball locations for these tricky packages as an ultimate fail safe. 
+
+## The pak package 
+
+Pak is a useful R package that can help with package installation and dependency look up. 
+
+If an error is encountered, we may need to enable the package pak to work with renv (or be patient and wait a couple minutes after installing pak). There is a useful git issue discussing this [here](https://github.com/r-lib/pak/issues/325). 
+
+Renv can be told to use pak for package installation with: `RENV_CONFIG_PAK_ENABLED = TRUE` 
+
+For example temporarily with: `Sys.setenv("RENV_CONFIG_PAK_ENABLED" = TRUE)`) 
+
+Check that it set with: `Sys.getenv('RENV_CONFIG_PAK_ENABLED')`
+
+## Package installation
+
+Packages are installed into a package library, a directory that exists somewhere on disk. 
+
+Packages are associated with that the OS, the particular version of R being used, and if using renv, with that particular project directory. The current library path(s) can be found with: `.libPaths()`. When packages are installed they will install to a sub folder that is specific to the combination of both of those.
+
+### The default library location 
+
+The default R installation will install packages into the users home directory, by default located at `R_HOME/library`. For example, on Windows: 
+
+```
+\-- C:/Users/LisaAnders/AppData/Local/R
+    \-- win-library
+        \-- 4.3
+            \-- ..packages
+\-- C:/Program Files/R
+    \-- R-4.3.1
+        \-- library
+            \-- ..packages
+```
+
+Learn more about [managing libraries in base R](https://rstudio.github.io/r-manuals/r-admin/Add-on-packages.html#managing-libraries). 
+
+### Shared site library location
+
+A shared site library can be set it up that will make packages from a global directory available to all users on the system, without the need for them to go through the installation steps. Through configuring Workbench, default repository locations can be set, an alternative directory can be set for use for package installation instead of user home directories, and user package installations can be disabled.
+
+A default site library can be used, at `R_HOME/site-library` (in this case `/opt/R/3.4.4/lib/R/library`), or a site library can be set up by setting `.Library.site` in `R_HOME/etc/Rprofile.site` / `{$R_HOME}/etc/Rprofile.site`. Multiple library locations can be set up to be used.
+
+When using a shared library, user options to change repository settings and package installation can be disabled if desired (typically as part of a validated environment management workflow). In this case, all users are accessing packages from that global site library and packages are added / updated by going through an approvals process with an admin ultimately running the commands that make the change.
+
+A site library can also be set up that allows users to access both the globally installed packages as well as install packages into the user directory. This is often "the best of both worlds". New users are able to hit the ground running quickly, and advanced users have control over packages and package versions for their projects. 
+
+### Renv library location
+
+Packages installed with renv, depending on some configuration options, will use two locations: 
+
+- User's cache - `~/.cache/R/renv/`
+- Project cache - `~/renv/library/`
+
+By default, the project cache will symlink to the users cache in order to preserve space. Projects can [be isolated](https://rstudio.github.io/renv/reference/isolate.html) in order to have the packages copied into the project library so that the project  is completely independent of the broader renv cache. 
+
+The folder structure (note that it is specific to the possible OS's, and the possible R versions and this is just an example) is: 
+
+*`~/.cache/R/renv/`*
+
+```
++-- projects 
++-- index
+\-- binary
+    \-- linux-centos-7
+        \-- R-4.3
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+        \-- R-4.4
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+    \-- linux-rocky-8.9
+        \-- R-4.3
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+\-- source
+    \-- repository
+        \-- ..packages
+```
+
+*`~/renv/`*
+
+```
++-- activate.R
++-- settings.json
++-- staging
+\-- library
+    \-- linux-centos-7
+        \-- R-4.3
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+        \-- R-4.4
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+    \-- linux-rocky-8.9
+        \-- R-4.3
+            \-- x86_64-pc-linux-gnu
+                \-- repository
+                    \-- ..packages
+\-- source
+    \-- repository
+        \-- ..packages
+```
+
+# Configuration
+
+## Local R config files
+
+These two configuration files, that may or may not be set, are the moste common for changing the behavior as relates to setting the repository for package installations:
+
+-   [.Renviron](https://rstats.wtf/r-startup#renviron) : The user R environ file contains all environment variables, often including renv settings, etc (typically located at ~/.Renviron) 
+-   [.Rprofile](https://rstats.wtf/r-startup#rprofile) : The user R profile file contains various settings and configuration properties (typically located at ~/.Rprofile)
+
+The easiest way to access either of this files is with the usethis package.
+
+``` r
+library(usethis)
+usethis::edit_r_environ() 
+usethis::edit_r_profile()
+```
+
+These [startup files can be disabled](https://rstats.wtf/r-startup#disabling-startup-files).
+
+## Shared server R config files
+
+Instead of setting individually with [.Renviron](https://rstats.wtf/r-startup#renviron) and [.Rprofile](https://rstats.wtf/r-startup#rprofile), the same parameters can be set at the server and R installation level. When set, any configuration will be active for any R sessions launched on that server.
+
+-   [Rprofile.site](https://packagemanager.rstudio.com/__docs__/user/configure-r/#configure-base-r) : The RProfile.site file is typically located at `etc/Rprofile.site`
+-   [Renviron.site](https://support.posit.co/hc/en-us/articles/360047157094-Managing-R-with-Rprofile-Renviron-Rprofile-site-Renviron-site-rsession-conf-and-repos-conf) : The Renviron.site file is specific to the R installation, typically located at `file.path(R.home("etc"), "Renviron.site")`. 
+
+For example, this code can be used to maintain the repository configuration across R sessions by adding to the individual users `.Rprofile` file. It can be maintained across all users on the server by adding to the `Rprofile.site` file.
+
+``` r
+local({
+  repos <- c(PackageManager = "https://packagemanager.posit.co/cran/__linux__/centos7/latest")
+  repos["LocalPackages"] <- "https://packagemanager.posit.co/local/__linux__/centos7/latest"
+  # add the new repositories first, but keep the existing ones
+  options(repos = c(repos, getOption("repos")))
+})
+getOption("repos")
+```
+
+Users can override the global settings in these files `Rprofile.site` and `Renviron.site` with their individual `.Rprofile` files.
+
+## Workbench files for RStudio Pro sessions
+
+Similarly, there are configuration files used in Workbench that can set repository preference for package installations:
+
+-   [/etc/rstudio/repos.conf](https://docs.posit.co/ide/server-pro/rstudio_pro_sessions/package_installation.html)
+-   [/etc/rstudio/rsession.conf](https://docs.posit.co/ide/server-pro/rstudio_pro_sessions/package_installation.html)
+
+When using a shared library, user options to change repository settings and package installation can be disabled if desired: 
+
+```
+# /etc/rstudio/rsession.conf
+allow-r-cran-repos-edit=0
+allow-package-installation=0
+```
+
+## Configuration of renv 
+
+For most users, renv's default behavior is powerful and doesn't need modification. 
+
+However, the behavior can also be manually set / modified. Generally speaking though, relying on the defaults is the recommended happy path as renv is designed to just magically work. This does mean that troubleshooting when things go wrong can be tricky, see the troubleshooting section below for some tips on what to look out for. 
+
+There are also a number of environment variables that can be set that will also similarly effect the behavior as relates to setting the repositories being used as the source for package installation. 
+
+Commonly, these settings are set in the `.Renviron` file to be set across all sessions for that user, or in the R installation's `Renviron.site` file so it is active for all users on that server. 
+
+Settings: 
+
+- [RENV_PATHS_PREFIX](https://rstudio.github.io/renv/reference/paths.html#sharing-state-across-operating-systems) : Used for sharing state across operating systems
+- [RENV_PATHS_CELLAR](https://rstudio.github.io/renv/articles/package-sources.html#the-package-cellar) : Path to tarballs, used as a last ditch effort for installing tricky packages
+- [RENV_PATHS_CACHE](https://rstudio.github.io/renv/articles/package-install.html#cache-location) : Path location for a cache shared across multiple users
+- [RENV_CACHE_USER](https://rstudio.github.io/renv/articles/package-install.html?q=PATH#shared-cache-locations) : When using a shared cache, renv can re-assign ownershp of the cache'd package to a separate user account
+- [renv.download.trace](https://rstudio.github.io/renv/articles/package-install.html?q=renv.download.trace#debugging) : Run `options(renv.download.trace = TRUE)` to temporarily have more verbose logging
+
+Config settings: 
+
+- [renv.config.repos.override](https://rstudio.github.io/renv/reference/config.html#renv-config-repos-override) : Enforce the use of some repositories over what is defined in the renv.lock file 
+- [renv.config.ppm.enabled](https://rstudio.github.io/renv/reference/config.html#renv-config-ppm-enabled) : Attempt to transform the repository URL in order to receive binaries on your behalf (defaults to TRUE)
+- [renv.config.ppm.default](https://rstudio.github.io/renv/reference/config.html#renv-config-ppm-default) : If repos have not already been set (for example, from the startup .Rprofile) then projects using renv will use the Posit Public Package Manager instance by default
+- [renv.config.ppm.url](https://rstudio.github.io/renv/reference/config.html#renv-config-ppm-url) : The URL for Posit Package Manager to be used for new renv projects 
+- [renv.config.user.environ](https://rstudio.github.io/renv/reference/config.html#renv-config-user-environ) : Load the users R environ file, usually encouraged (defaults to true) 
+- [renv.config.user.profile](https://rstudio.github.io/renv/reference/config.html#renv-config-user-profile) : Load the users R profile file, usually discouraged since it can break project encapsulation (defaults to false) 
+- [renv.config.user.library](https://rstudio.github.io/renv/reference/config.html#renv-config-user-library) : option to include the system library on the library paths for projects, usually discouraged since it can break project encapsulation (defaults to false) 
+- [renv.config.external.libraries](https://rstudio.github.io/renv/reference/config.html#renv-config-external-libraries) : Similar to `renv.config.user.library`, external libraries can be included with the project, usually discouraged since it can break project encapsulation (defaults to false) 
+- [renv.config.cache.enabled](https://rstudio.github.io/renv/reference/config.html#renv-config-cache-enabled) : Enable the global renv package cache, so that packages are installed into the global cache and then linked or copied into the users R library in order to save space (defaults to true)
+- [renv.config.cache.symlinks](https://rstudio.github.io/renv/reference/config.html?q=link#renv-config-cache-symlinks) : Use symlinks to reference packages installed into the global renv package cache (if set to FALSE packages are copied from the cache into your project library) (enabled by default, defaults to NULL) 
+- [renv.config.pak.enabled](https://rstudio.github.io/renv/reference/config.html#renv-config-pak-enabled) : Use pak with renv to install packages 
+
+Since the configuration settings can be set in multiple places, the priority is given according to: 
+
+```{mermaid}
+graph TD;
+    A(Renv configuration selection) -->B;
+    B{R option <br/> renv.config.<name>} -- Not set -->C;
+    B{R option <br/> renv.config.<name>} -- Set -->F;
+    C{Environment variable <br/> RENV_CONFIG_<NAME>} -- Not set -->D;
+    C{Environment variable <br/> RENV_CONFIG_<NAME>} -- Set -->F;
+    D{Default} -->F;
+    F(End)
+```
+
+If both the R option and the environment variable option are defined, the R option is preferred. 
+
+We can check the value of any of these parameters a couple ways: 
+
+```r
+# Checking the renv options by reading environment variables and renv config properties
+renv::paths$library()
+Sys.getenv('RENV_PATHS_CACHE')
+Sys.getenv('RENV_CACHE_USER')
+renv::paths$cache()
+
+# Check the r_environ and r_profile contents using the usethis package
+library(usethis)
+usethis::edit_r_environ() 
+usethis::edit_r_profile()
+```
+
+### Renv and binary package OS and R version detection 
+
+By default, renv used with Package Manager will dynamically set the URL of your repository to pull package binaries for your respective system. 
+
+> Starting with R 4.4.0, renv automatically uses a platform prefix for library paths on linux (the equivalent to setting `RENV_PATHS_PREFIX_AUTO = TRUE`). This means that, for example, upgrading to a new version of an OS will automatically signal to renv that new library + cache directories will be required. 
+
+#### Sharing state across operating systems 
+
+As of renv 0.13.0, [sharing state across operating systems](https://rstudio.github.io/renv/reference/paths.html#sharing-state-across-operating-systems) is now possible. By default, it will construct a prefix based on fields within the system's /etc/os-release file. 
+
+also possible to explicitly set with the `RENV_PATHS_PREFIX` environment variable. For example, it could be set like `RENV_PATHS_PREFIX = "ubuntu-bionic"` in order to programmatically generate a cache path like `/mnt/shared/renv/cache/v2/ubuntu-bionic/R-3.5/x86_64-pc-linux-gnu`. Alternatively the auto feature can be enabled with `RENV_PATHS_PREFIX_AUTO = TRUE` to automatically detect the environment and set the path. 
+
+Commonly, this would be set in the `.Renviron` file to be set across all sessions for that user, or in the R installation's `Renviron.site` file so it is active for all users on that server. 
+
+### Renv and binary package OS and R version detection
+
+Renv's default behavior is powerful when using it with Posit Package Manager. It will *automatically* try to detect the details about your underlying system and set the corrrect URL path so that the appropriate binaries are downloading. If it is unable to find a binary, then it will fail over to the source URL. 
+
+## Configuration of Posit Package Manager
+
+Posit Package Manager is a hosting repository that can be deployed inside a companies network. It is often used in conjunction with vulnerability detection and package blocking for security. It is also useful for hosting internally developed packages that are meant to stay confidential and only used within that particular enterprise organization.
+
+-   [Configuring R Environments](https://packagemanager.rstudio.com/__docs__/user/configure-r/#configure-r)
+-   [Configuring Python Environments](https://packagemanager.rstudio.com/__docs__/user/configure-python/)
+
+For Workbench the URL for Package Manager is commonly configured so that it is at least used as the default repository for both R and Python packages from within the customers enterprise network.
+
+Optionally, the Posit Package Manager url can be configured to be specific to:
+
+-   Snapshot dates
+-   Particular curated repository/repositories
+-   Particular OS (in order to install binaries)
+
+### Package Manager and binary package OS and R version detection
+
+Binary packages are incredibly useful, enabling faster downloads by skipping the compilation step. When a binary package is requested (by using the `__linux__` URL), Package Manager will make a best effort to serve the requested binary package. If that package is unavailable or *unsupported on the user's binary distribution* Package Manager will fall back to serving the packages source version.
+
+Posit Package Manager has the option for the [R user agent header can be configured](https://packagemanager.rstudio.com/__docs__/admin/serving-binaries/#binary-user-agents). The user's User-Agent request header indicates to Package manager which appropriate binary package to server, based on the R version and the OS. A [diagnostic script](https://packagemanager.rstudio.com/__docs__/admin/check-user-agent.R) is provided for generating a diagnostic to make sure this is set correctly. The diagnostic will fail to indicate that the OS and R version in the User-Agent request header needs to be updated.
+
+<details>
+
+<summary>Click here to expand for the diagnostic script</summary>
+
+``` r
+# User agent diagnostic script for Posit Package Manager binary packages
+
+local({
+  if (.Platform$OS.type != "unix" || Sys.info()["sysname"] == "Darwin") {
+    message("Success! Posit Package Manager does not require additional configuration to install binary packages on macOS or Windows.")
+    return(invisible())
+  }
+
+  dl_method <- getOption("download.file.method", "")
+  dl_extra_args <- getOption("download.file.extra", "")
+  user_agent <- getOption("HTTPUserAgent", "")
+
+  if (dl_method == "") {
+    dl_method <- if (isTRUE(capabilities("libcurl"))) "libcurl" else "internal"
+  }
+
+  default_ua <- sprintf("R (%s)", paste(getRversion(), R.version$platform, R.version$arch, R.version$os))
+
+  instruction_template <- 'You must configure your HTTP user agent in R to install binary packages.
+
+In your site-wide startup file (Rprofile.site) or user startup file (.Rprofile), add:
+
+# Set default user agent
+%s
+
+
+Then restart your R session and run this diagnostic script again.
+'
+
+  message(c(
+    sprintf("R installation path: %s\n", R.home()),
+    sprintf("R version: %s\n", R.version.string),
+    sprintf("OS version: %s\n", utils::sessionInfo()$running),
+    sprintf("HTTPUserAgent: %s\n", user_agent),
+    sprintf("Download method: %s\n", dl_method),
+    sprintf("Download extra args: %s\n", dl_extra_args),
+    "\n----------------------------\n"
+  ))
+
+  if (dl_method == "libcurl") {
+    if (!grepl(default_ua, user_agent, fixed = TRUE) ||
+        (getRversion() >= "3.6.0" && substr(user_agent, 1, 3) == "R (")) {
+      config <- 'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))'
+      message(sprintf(instruction_template, config))
+      return(invisible())
+    }
+  } else if (dl_method %in% c("curl", "wget")) {
+    if (!grepl(sprintf("--header \"User-Agent: %s\"", default_ua), dl_extra_args, fixed = TRUE)) {
+      ua_arg <- "sprintf(\"--header \\\"User-Agent: R (%s)\\\"\", paste(getRversion(), R.version[\"platform\"], R.version[\"arch\"], R.version[\"os\"]))"
+      if (dl_extra_args == "") {
+        config <- sprintf("options(download.file.extra = %s)", ua_arg)
+      } else {
+        config <- sprintf("options(download.file.extra = paste(%s, %s))", shQuote(dl_extra_args), ua_arg)
+      }
+      message(sprintf(instruction_template, config))
+      return(invisible())
+    }
+  }
+
+  message("Success! Your user agent is correctly configured.")
+})
+```
+
+</details>
+
+## Configuration on Workbench for R repository using run.R / Programmatically setting the repository location
+
+Instead of the above, a run.R file can be used to programmatically set the repository and library location for users. This is commonly used in validated workflows, where the additional oversight is critical.
+
+Example created by Michael [here](https://github.com/sol-eng/singularity-rstudio/blob/main/data/r-session-complete/jammy/scripts/run.R). 
+
+# Scenarios 
+
+## Scenario 1: Setting up a shared site library on Workbench
+
+The [shared site library](https://solutions.posit.co/envs-pkgs/environments/shared/) is specific to an installed version of R. For example for R version `4.3.2` installed to: `/opt/R/4.3.2/lib/R/library`: 
+
+1. Edit the Rprofile.site file to set the repository URL 
+
+```
+# /opt/R/4.3.2/etc/Rprofile.site
+local({
+  options(repos = c(CRAN = "https://r-pkgs.example.com/cran/128"))
+})
+```
+
+2. (optional) The default site library can be used, at `R_HOME/site-library` (in this case `/opt/R/3.4.4/lib/R/library`), or a site library can be set up by setting `.Library.site` in `R_HOME/etc/Rprofile.site`. Multiple library locations can be set up to be used. 
+
+3. Run R as the root/admin account and install all desired packages 
+
+```r
+# Multiple packages can be installed at the same time like this: 
+export R_VERSION=4.3.2
+
+/opt/R/${R_VERSION}/bin/R
+
+sudo /opt/R/${R_VERSION}/bin/Rscript -e 'install.packages(c("haven","forcats","readr","lubridate","shiny", "DBI", "odbc", "rvest", "plotly","rmarkdown", "rsconnect","pins","png","tidyverse", "Rcpp"), repos = "http://cran.us.r-project.org")'
+
+q()
+```
+
+4. Users access packages on the system (without needing to install)
+
+When using a shared library, the ability for users to change repository settings and package installation can be disabled: 
+
+```
+# /etc/rstudio/rsession.conf
+allow-r-cran-repos-edit=0
+allow-package-installation=0
+```
+
+
+## Scenario 2: Setting up a project to use renv
+
+```r
+# install renv
+install.package("renv") 
+library(renv)
+
+# activate the project as an renv project
+renv::activate()
+
+# generate the renv.lock file 
+renv::snapshot()
+
+# check the status of renv 
+renv::status()
+
+# On a separate system the snapshot can be used to install the specific packages and versions 
+renv::restore() 
+
+# Restore a project with an explicit repository URL, note that this does not update the renv.lock file, it will need to be manually edited
+renv::restore(repos = c("COLORADO" = "https://colorado.posit.co/rspm/all/latest"), rebuild=TRUE)
+
+# Add additional logging
+options(renv.download.trace = TRUE)
+```
+
+## Scenario 3: Determining the root package that is causing a failing dependency 
+
+For example, error message: 
+
+> 2024/05/17 9:24:10 AM:
+Error in dyn.load(file, DLLpath = DLLpath, ...) : 
+2024/05/17 9:24:10 AM:
+  unable to load shared object '/opt/rstudio-connect/mnt/app/packrat/lib/x86_64-pc-linux-gnu/4.3.2/magick/libs/magick.so':
+2024/05/17 9:24:10 AM:
+  libMagick++-6.Q16.so.8: cannot open shared object file: No such file or directory
+2024/05/17 9:24:10 AM:
+Calls: loadNamespace -> library.dynam -> dyn.load
+
+We can look through our project repository and see that the `magick` package isn't directly being called. So the question is, which package is calling it as dependency? 
+
+The easiest way to look up the dependency is to open the renv.lock file and find which package has it listed as a dependency. 
+
+Some other tricks that might be useful are: 
+
+- We can use renv to look at top level dependencies: `renv::dependencies()`
+- We can use base R to look up package dependencies: `tools::package_dependencies("leaflet", recursive = TRUE)[[1]]`
+- Renv can be told to use pak for package installation with: `RENV_CONFIG_PAK_ENABLED = TRUE` 
+ - Check that it set with: `Sys.getenv('renv.config.pak.enabled')`
+- We can use pak to look up all package dependencies in a tree format: `pak::pkg_deps_tree("tibble")`
+- We can also get more details about the packages with: `pak::pak_sitrep()` 
+ - If an error is encountered, we may need to enable the package pak to work with renv (or be patient and wait a couple minutes after installing pak). There is a useful git issue discussing this [here](https://github.com/r-lib/pak/issues/325). 
+
+We can then clean up the project and remove packages that are installed, but no longer referenced in the project source, with `renv::clean()` and save that to the renv lock file with `renv::snapshot()`. Don't forget to update your manifest.json file if this is a project being published to Connect with `rsconnect::writeManifest()`. 
+
+
+## Scenario 4: Upgrading a project using renv from R 4.1 to R 4.4 
+
+> Why is this relevant? [R CVE detection, vulnerability removed with R 4.4](https://support.posit.co/hc/en-us/articles/23170092899607-CVE-2024-27322-R-bitrary-Code-Execution)
+
+What is recommended: For each project, individually capture the requirements with renv. Change the R version and use the renv.lock file to install the captured requirements for the new R version. Perform tests, updating code and package versions as needed. 
+
+What is not recommended: An in-place upgrading. Meaning, we do not recommend removing existing R versions and forcing all projects to use R 4.4. It is likely that code will break and will need developer work to make compatible with the new R version. 
+
+## Scenario 5: OS migration for individual R projects using renv
+
+Refer to [here](https://docs.posit.co/how-to-guides/upgrade-os-and-product/phase2-migrate/?h=migrat#workbench-post-migration)
+
+All packages will need to be rebuilt. 
+
+These two locations in particular, the user home directories and global R or Python directories, will likely need to be flushed and rebuilt: 
+
+- `~/R`
+- `~/.local/lib/python3.*`
+
+Reference [this script](https://gist.github.com/edavidaja/5996ffeb042df2642c77c065c07f023d) from David which programmatically reinstalls all packages installed into user home directories, or the global R or Python directories. 
+
+
+Rebuild renv: 
+
+```r
+# Delete existing libraries
+unlink("renv/library", recursive=TRUE)
+
+# Restart R session
+.rs.restartR()
+
+# Change anything that is needed, repository URL, etc
+
+# Re-install libraries
+renv::restore(rebuild = TRUE)
+```
+
+Rebuild venv: 
+
+```bash
+# Activate existing venv
+source .venv/bin/activate
+
+# Capture all installed packages
+python -m pip freeze > requirements-freeze.txt
+
+# Deactivate and delete
+deactivate
+rm -rf .venv/
+
+# Change anything that is needed, repository URL, etc
+
+# Create a new virtual environment
+python -m venv .venv
+source .venv/bin/activate 
+python -m pip install --upgrade pip wheel setuptools
+python -m pip install -r requirements-freeze.txt
+```
+
+For Connect, the content runtimes will need to be cleared and rebuilt. This can be [done pre-emptively](https://docs.posit.co/connect/admin/server-management/runtime-caches/#workflow). 
+
+Delete: 
+
+```r
+# Enumerate the caches known to your server.
+rsconnect system caches list \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key
+
+# Validate cache targeted for deletion.
+rsconnect system caches delete \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key \
+    --language Python \
+    --version 3.9.5 \
+    --dry-run
+
+# Delete one cache.
+rsconnect system caches delete \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key \
+    --language Python \
+    --version 3.9.5
+```
+
+Rebuild: 
+
+```r
+# Enumerate every "published" content item and save its GUID.
+rsconnect content search \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key \
+    --published | jq '.[].guid' > guids.txt
+
+# Queue each GUID for build.
+xargs printf -- '-g %s\n' < guids.txt | xargs rsconnect content build add \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key
+
+# Build each queued content item.
+rsconnect content build run \
+    --server https://connect.example.org:3939 \
+    --api-key my-api-key
+```
+
+## Scenario 6: Changing the project repository URL 
+
+Often the package repository is set to a specific source URL. This can be due to it being within your network, or so that you are getting binaries for a specific OS version, etc.
+
+Using the `RENV_CONFIG_REPOS_OVERRIDE` setting: 
+
+```r
+options('repos')
+
+# Set the override as a one off 
+Sys.setenv("RENV_CONFIG_REPOS_OVERRIDE" = c("COLORADO" = "https://colorado.posit.co/rspm/all/latest")) 
+
+# Check that it set 
+Sys.getenv("RENV_CONFIG_REPOS_OVERRIDE")
+
+# Turn on debug logging so we can see more information about where packages are coming from and verify it's using the correct URL
+options(renv.download.trace = TRUE)
+
+# Rebuild the environment using that URL
+renv::restore(rebuild=TRUE) 
+
+#Override only applies during restore, and won't update the renv.lock file, so either manually update the renv.lock file with the appropriate URLor using renv::snapshot(repos = "")
+```
+
+Using the `repos` setting during rebuild: 
+
+```r
+# Rebuild 
+renv::restore(repos = c("COLORADO" = "https://colorado.posit.co/rspm/all/latest"), rebuild=TRUE)
+
+# Snapshot s the URL change is reflected
+renv::snapshot(repos = c("COLORADO" = "https://colorado.posit.co/rspm/all/latest")) 
+```
+
+Changing it directly in the renv.lock file: 
+
+```r
+options('repos')
+
+# Either manually update the renv.lock file with the appropriate URL or using
+renv::snapshot(repos = c("COLORADO" = "https://colorado.posit.co/rspm/all/latest")) 
+
+# Rebuild the environment using that URL
+renv::restore(rebuild=TRUE) 
+```
+
+## Scenario 7: Recovering an old project that didn't have an renv and isn't working with latest R, package versions 
+
+Use the snapshot date option with package manager to "guess" when the environment would have been built with renv so that package versions can be individually tweaked until the project works. Use the `renv::revert` feature with version control to update the packages with the ability to downgrade as needed. 
+
+## Scenario 8: Going between OS on the same Workbench system using slurm / singularity with a renv project
+
+With the interaction between renv and package manager, as well as the additions with recognition from renv when the OS and R version has changed, things should just work magically as long as the project is configured to use these pieces: 
+
+- renv 
+- package manager (binaries enabled)
+
+On a system that has been configured to use slurm with singularity images (that are different OS's) we can run these lines to get a feel for what is going on: 
+
+```r
+# Turn on debug logging so we can see more information about where packages are coming from and verify it's using the correct URL
+options(renv.download.trace = TRUE)
+
+# Check the default repository URL
+options('repos')
+
+# Check the OS version
+system("cat /etc/os-release")
+
+# Check the details of our singularity environment
+system("env | grep SINGULARITY")
+
+# Check that auto-path prefix re-writing is set
+Sys.getenv("RENV_PATHS_PREFIX_AUTO")
+
+# We can attempt to set the URL to a specific binary, when we snapshot it will update the lock file to have the generic URL
+renv::snapshot(repos = c("RSPM" = "https://packagemanager.posit.co/cran/__linux__/centos8/latest")) 
+
+# We can attempt to set the URL to a specific binary, when we snapshot it will update the lock file to have the generic URL
+renv::snapshot(repos = c("RSPM" = "https://packagemanager.posit.co/cran/__linux__/jammy/latest")) 
+
+# Update the renv to use a source URL as RSPM 
+renv::snapshot(repos = c("RSPM" = "https://packagemanager.posit.co/cran/latest")) 
+
+# We can also manually set the repo outside of renv this way, for example to successfully download renv
+options(repos=c(CRAN="https://cran.r-project.org"))
+
+# Rebuild the environment using that URL
+renv::restore(rebuild=TRUE) 
+```
+
+
+Inside the renv lock file we might see a couple different things: 
+
+```
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://packagemanager.posit.co/cran/__linux__/centos8/latest"
+      },
+```
+
+This will cause problems and will tell renv to install the wrong version of packages for the wrong OS.  
+
+If we try to snapshot a binary repository URL with `renv::snapshot(repos = c("RSPM" = "https://packagemanager.posit.co/cran/__linux__/jammy/latest"))` then we will see the renv.lock will be updated to: 
+
+```
+    "Repositories": [
+      {
+        "Name": "RSPM",
+        "URL": "https://packagemanager.posit.co/cran/latest"
+      }
+```
+
+This correction from the binary URL to the base URL will happen regardless of whether the OS matches the one we are using or not. 
+
+When we install a package we will see that it is downloading the binary. This is the magic of `RENV_PATHS_PREFIX_AUTO`! This happens regardless of whether our package source is `CRAN` or `RSPM`. 
+
+We can test what the outputs are for each scenario: 
+
+- Before a project has been initialized
+- Once a project has been initialized, with renv 
+- Closing the project and re-opening it with a different image (different OS) and restoring packages ('renv::restore(rebuild=TRUE)')
+
+The auto-path prefix re-writing is really powerful. This means that, for example, upgrading to a new version of an OS will automatically signal to renv that new library + cache directories will be required. The caveats to know are: 
+
+- Starting with 4.4, renv automatically uses a platform prefix for library paths on linux. 
+- R versions below this may need to have the paths prefix set (for example for just the session with `Sys.setenv("RENV_PATHS_PREFIX_AUTO" = TRUE)`, though most likely this should be set at the user or global level). 
+
+We can set auto-path prefix re-writing at the user level by adding `RENV_PATHS_PREFIX_AUTO = TRUE` into the user r environ file: 
+
+``` r
+library(usethis)
+usethis::edit_r_environ() 
+```
+
+# Common issues and troubleshooting 
+
+## Package installation errors on Workbench
+
+Here's an example error message that occurred during package installation inside Workbench (`install.packages(askpass)`): 
+
+> \* installing *binary* package ‘askpass’ ... cp: cannot open './libs/askpass.so' for reading: Operation not permitted /usr/bin/gtar: You may not specify more than one '-Acdtrux', '--delete' or '--test-label' option Try '/usr/bin/gtar --help' or '/usr/bin/gtar --usage' for more information. /usr/bin/gtar: This does not look like a tar archive /usr/bin/gtar: Exiting with failure status due to previous errors
+
+A good first trouble shooting step is to SSH on the server and open an R session as root and attempt to install the same package. This helps to rule out where the issue is coming from, the global R configuration, the server, or a specific user issue or something with the Workbench configuration. Create a R session after SSH-ing into the server with `/opt/R/${R_VERSION}/bin/R`
+
+### Where to start
+
+Get the system information: `Sys.info()`
+
+Get session details: `sessionInfo()`
+
+### Problems with pak 
+
+Get details about pak (if used): `pak::pak_sitrep()`
+
+Check if [renv has been configured to use pak](https://rstudio.github.io/renv/reference/config.html#renv-config-pak-enabled): `Sys.getenv('renv.config.pak.enabled')`
+
+### Problems with renv : where to start 
+
+Can they provide a renv diagnostic? It is generated by running this: `renv::diagnostics()`. 
+
+### Problems with renv : cache location 
+
+Check the location of the renv cache: 
+
+```r
+renv::paths$library()
+Sys.getenv('RENV_PATHS_CACHE')
+options('renv.config.external.libraries')
+options('renv.download.trace')
+renv::paths$cache()
+Sys.getenv('RENV_PATHS_PREFIX_AUTO')
+```
+
+Make sure that it is located to a writeable location (if it is a mount, see the note about file mounts below, this could be a source of issues): 
+
+`system('namei -l /rsspdata/common/renv_cache/renv/v5/R-3.6/x86_64-pc-linux-gnu')`
+
+Check that the renv cache location matches the library locations: `.libPaths()`
+
+By default packages are installed into the global cache at `~/.cache/R/renv/`  and symlinked from the users cache within the project at `~/renv/library/`.
+
+Are they using a [shared renv cache](https://rstudio.github.io/renv/articles/package-install.html?q=PATH#shared-cache-locations), or an [external library](https://rstudio.github.io/renv/reference/config.html#renv-config-external-libraries),
+
+Do they know if they've implemented settings in either of these, and could they share the contents?
+
+- [Rprofile.site](https://packagemanager.rstudio.com/__docs__/user/configure-r/#configure-base-r) : The `RProfile.site` file is typically located at `etc/Rprofile.site`
+- [Renviron.site](https://support.posit.co/hc/en-us/articles/360047157094-Managing-R-with-Rprofile-Renviron-Rprofile-site-Renviron-site-rsession-conf-and-repos-conf) : The `Renviron.site` file is specific to the R installation (in this case I'm interested in if it exists for R 4.3 and R 3.6), typically located at `file.path(R.home("etc"), "Renviron.site")`.
+- Check if an external library is referenced in the environment: `options('renv.config.external.libraries')`
+
+Is the goal to use a [shared renv cache](https://rstudio.github.io/renv/articles/package-install.html?q=PATH#shared-cache-locations) location? There are a couple caveats with shared cache's that can make them tricky. (1) cache permissions can be set with ACL's, needing admin oversight to make sure are set correctly, (2) packages in the cache are owned by the requesting user, unless the RENV_CACHE_USER option is set. When set, renv will attempt to run `chown -R <package> <user>` to update cache ownership after the package has been copied into the cache.
+
+If the desired behavior is to have a [shared renv cache](https://rstudio.github.io/renv/articles/package-install.html?q=PATH#shared-cache-locations) then these two settings will likely need to be added to the project .Renviron, user .Renviron, or site Renviron.site file: 
+
+- [RENV_PATHS_CACHE](https://rstudio.github.io/renv/articles/package-install.html#cache-location) : Path location for a cache shared across multiple users
+- [RENV_CACHE_USER](https://rstudio.github.io/renv/articles/package-install.html?q=PATH#shared-cache-locations) : When using a shared cache, renv can re-assign ownership of the cache'd package to a separate user account
+
+I'd be curious, if it's possible for them, to see if they are able to use R 4.4, or to set that parameter `RENV_PATHS_PREFIX_AUTO` to true (for example for just the session with `Sys.setenv("RENV_PATHS_PREFIX_AUTO" = TRUE)`) using their current version of R, and repeat the steps of installing a package:
+
+> Starting with R 4.4.0, renv automatically uses a platform prefix for library paths on linux (the equivalent to setting `RENV_PATHS_PREFIX_AUTO = TRUE`). This means that, for example, upgrading to a new version of an OS will automatically signal to renv that new library + cache directories will be required.
+
+Of course, they could also try this for installing the package, bypassing the cache, and see if it works (but I'm worried that there is a ghost setting somewhere that needs to be removed so that issues don't keep popping up): 
+
+```plaintext
+# install a package, bypassing the cache
+renv::install("<package>", rebuild = TRUE)
+
+# restore packages from the lockfile, bypassing the cache
+renv::restore(rebuild = TRUE)
+```
+
+### Problems with renv : other
+
+Check: 
+
+- Are you running the latest renv? If not, upgrade
+- Add additional logging: `options(renv.download.trace = TRUE)`
+- Take a diagnostic: `renv::diagnostics()`
+
+If you are having particular issue with a package and it keeps being pulled in from the cache then doing a complete purge and reinstall can be useful: 
+
+```r
+renv::purge("stringr")
+renv::purge("stringi")
+install.packages("stringr")
+```
+
+`renv::purge` removes packages completely from the package cache (which may be shared across projects) rather than just removing the package from the project which is what `renv::remove` does. This can be useful if a package which had previously been installed in the cache has become corrupted or unusable, and needs to be re-installed.
+
+Follow these steps to "flush" and rebuild the renv environment, without losing the important parts of your renv.lock that are defining the R version and package versions: 
+
+```r
+renv::snapshot()
+# Make the appropriate changes (for example, changing OS) 
+# Update the renv.lock file manually to reflect any needed changes (for example, changing the repository URL) 
+renv::deactivate()
+renv::activate()
+renv::restore(rebuild=TRUE) 
+```
+
+Check that the packages either installed into the global cache at `~/.cache/R/renv/`  or the users cache within the project at `~/renv/library/`. The folder structure will give some clues for whether source, binaries were installed, and which OS and R version they were installed for if specified. 
+
+### Problems with packages not persisting 
+
+Is this on a cloud vendor? IE sagemaker, google workstations, azureml? Check that the package repository location is being saved to the mounted drive. If it is saved to the general OS that is ephemeral it will be lost when the session is spun down. This also applies for things like git credentials. 
+
+### Incorrect / corrupted R installation
+
+Check for an incorrect R installation for the OS, or a R installation that has gotten corrupted. An easy way to test this is to install a new R version, making sure to closely follow [the instructions](https://docs.posit.co/resources/install-r/) as well as verifying the OS version.
+
+### Incorrect package repository source URL for the particular system OS
+
+When R installs a binary package, it doesn’t actually check if the package can be loaded after installation, which is different from source packages. So it is unfortunately possible to install a binary package only to find out later that it can’t actually be loaded.
+
+Check the URL that the user is installing from: `options('repos')`
+
+Temporarily point the repository to global CRAN and check if the packages will successfully install. For example by running this: `options(repos=c(CRAN="https://cran.r-project.org"))` and then installing any package with `install.packages("ggplot2")`
+
+Check in `/etc/rstudio/rsession.conf` if there is anything that would set the library location, for example `r-libs-user=~/R/library`.
+
+It may also be useful to verify both the OS you are currently useing as well as checking that the repository you are pointing towards is using the correct OS if it is pulling in the binaries. 
+
+
+For debian/ubuntu distributions: 
+```bash
+lsb_release -a
+```
+
+For other distributions (more broadly cross-linux compatible command): 
+```bash
+cat /etc/os-release
+```
+
+### Users lacking read/write permissions to their home directory
+
+Check the home directory permissions on `/home/username/`. For example with `namei -l /home/username/`.
+
+If useful, could try recursively chown-ing the directory with the user experiencing the issue and `chmod 750` to make sure there is access.
+
+This can commonly happen after a migration from one server to another, if the correct permissions weren't correctly carried over. This is why we commonly recommend using rsync with the -a flag for transfer any files / directories. This syncs directories recursively and preserve symbolic links, groups, ownership, and permissions. Additionally, rsync needs to be used in root mode in order to completely move the various software and home directory components as it includes files with restrictive read and write permissions.
+
+For example, the permissions should look something like: `-rwx-r--r--`
+
+### Users lacking permissions to ./libs
+
+Check the permissions on `./libs/`. For example with `namei -l ./libs` and `ls -la ./libs`
+
+### Incorrect PAM configuration for users
+
+Check the output of `sudo getent passwd username`
+
+From a workbench session the output of the environment, `Sys.getenv()` and compare between a Workbench session and logged into a R session as root on the server (after SSH-ing in)
+
+From an SSH session as root check the outputs of the user verification commands: `sudo /usr/lib/rstudio-server/bin/pamtester --verbose <session-profile> <user> authenticate acct_mgmt setcred open_session`
+
+For example this command will likely look like: `sudo /usr/lib/rstudio-server/bin/pamtester --verbose rstudio-session username authenticate acct_mgmt setcred open_session`
+
+Check for any umask or mask lines used during user provisioning, in the `/etc/sssd/sssd.conf` file
+
+### Server hardening
+
+Another thing to check is whether [SELinux is enabled on the system](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/8/html/using_selinux/changing-selinux-states-and-modes_using-selinux). Check the mode with `getenforce`
+
+This can result in user specific errors, in that case compare the SELinux context for a user that has successfully package installations to the one that is having errors.
+
+Often the following command will work to fix SELinux context issues: `restorecon -Rv /home/users/username`
+
+Great article from our support team discussing [how to use selinux](https://support.posit.co/hc/en-us/articles/4579112985751-SELinux-a-quick-primer-and-troubleshooter)
+
+Disable SELINUX (RHEL only): `setenforce 0 && sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/g' /etc/selinux/config`
+
+Check for [FIPS being enabled](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/security_hardening/assembly_installing-the-system-in-fips-mode_security-hardening): `fips-mode-setup --check`
+
+[This article from redhat on FIPS mode](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/security_hardening/assembly_installing-the-system-in-fips-mode_security-hardening) is also very useful.
+
+### Mounted share drive
+
+Check if `/home` on the server, or is it a network mount (NFS or CIFS). In NFS, for example, there can be the use of access control lists which can impact permissions. Similarly, when working in a system that has a mounted share drive then would want to check that libraries are being written to that share so you get persistence. Typically this means writing to inside the home directory. Check mounted drives with: `df -h`
+
+Check `/etc/fstab` to see if the home directories are mounted with `noexec`
+
+For example, this shows that the home directories were mounted with `noexec`: `/dev/mapper/rhel-home  /home  xfs    defaults,noexec,nosuid,nodev   0 0`
+
+This resulted in this error message:
+
+```         
+library(stringi)Error: package or namespace load failed for 'stringi' in dyn.load(file, DLLpath = DLLpath, ...):
+unable to load shared object '/home/c_jjones/R/x86_64-pc-linux-gnu-library/4.3/stringi/libs/stringi.so':
+  /home/c_jjones/R/x86_64-pc-linux-gnu-library/4.3/stringi/libs/stringi.so: failed to map segment from shared object
+```
+
+### Azure cloud images
+
+The default Azure RHEL images are unfortunately constricted in their ability to do some things. 
+
+### Slurm 
+
+The Slurm service account should have full privileges to the Slurm environment (like killing jobs).
+ 
+In regards to not being able to run the diagnostics command, could you please provide the following:
+
+- Enable debug logging by setting enable-debug-logging=1 in /etc/rstudio/launcher.slurm.conf
+- Trigger the issue you are experiencing after restarting the launcher.
+- Resulting logs will be in: - /var/lib/rstudio-launcher/Slurm/rstudio-slurm-launcher.log
+- The Slurm version, which can be found by running sinfo --version
+- The installation location of Slurm on the host
+- Your /etc/slurm.conf (or equivalent) configuration file
+- The output of running sinfo as the Slurm service user configured in /etc/rstudio/launcher.slurm.conf
+- Run test job with srun date
+- Replace <USER> with a valid username of a user that is set up to run Posit - Workbench in your installation, in the commands below:
+- sudo rstudio-server stop
+- sudo rstudio-server verify-installation --verify-user=<USER>
+- sudo rstudio-server start
+- The output of running sudo rstudio-launcher status
+
+# References
+
+-   [Sharing state across operating systems](https://rstudio.github.io/renv/reference/paths.html#sharing-state-across-operating-systems)
+-   [What they forgot to teach you about R](https://rstats.wtf/r-startup)
+-   [renv.config.repos.override](https://rstudio.github.io/renv/reference/config.html#renv-config-repos-override)
+-   [Managing R with .Rprofile, .Renviron, Rprofile.site, Renviron.site, rsession.conf, and repos.conf](https://support.posit.co/hc/en-us/articles/360047157094-Managing-R-with-Rprofile-Renviron-Rprofile-site-Renviron-site-rsession-conf-and-repos-conf)
+-   [Package Manager admin guide: Configuring R Environments](https://packagemanager.rstudio.com/__docs__/user/configure-r/)
+-   [Workbench admin guide: Rstudio Pro Sessions: Package Installation](https://docs.posit.co/ide/server-pro/rstudio_pro_sessions/package_installation.html)
+-   [Reproduceable Environments](https://solutions.posit.co/envs-pkgs/environments/)
+-   [R user agent header can be configured](https://packagemanager.rstudio.com/__docs__/admin/serving-binaries/#binary-user-agents)
+-   [Reset users state on Workbench](https://support.posit.co/hc/en-us/articles/218730228-Resetting-a-user-s-state-in-the-RStudio-IDE-on-Posit-RStudio-Workbench-RStudio-Server)
+-   [Managing libraries for RStudio Workbench / RStudio Server](https://support.posit.co/hc/en-us/articles/215733837-Managing-libraries-for-RStudio-Workbench-RStudio-Server) 
+-   [Setting Default Repositories in Workbench](https://solutions.posit.co/envs-pkgs/rsw_defaults/)
+-   [R Manuals :: R Installation and Administration](https://rstudio.github.io/r-manuals/r-admin/)
+-   It was discussed in [this stackoverflow post](https://stackoverflow.com/questions/65326540/how-to-change-r-repository-cran-from-renv-lock-to-get-packages-from-an-internal) with this example (run from console): `Sys.setenv("RENV_CONFIG_REPOS_OVERRIDE" = "your_private_package_repository_url")
+- Internal slack thread: <https://positpbc.slack.com/archives/CFLAY27EH/p1715370382325929>

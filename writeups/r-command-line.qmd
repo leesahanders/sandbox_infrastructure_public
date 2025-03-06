@@ -1,0 +1,380 @@
+---
+title: "Command line / bash and R" 
+description: "Experiments in running command line from R"
+author: "Lisa"
+date: "2022-09-20"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+## Purpose
+
+Have you ever needed to run linux / mac / or windows commands from an R script? Do you have workflows where you have to create data files in R, pass to another system for processing, and then back into R for final visualization? 
+
+One of the best things about the R ecosystem is the massive spread of packages and capability that have already been developed, including for running operating system commands already at your fingertips. 
+
+Warning: With great power comes great responsibility. While the commands listed in this document are safe to run it's always a good idea to double check what a system command actually does prior to running it, otherwise you could end up one of the examples [here](https://en.wikipedia.org/wiki/List_of_security_hacking_incidents). 
+
+## Including Bash
+
+RMarkdown supports bash, sh and awk (depending on the hosting operating system). 
+
+For example: 
+
+```bash
+pwd
+```
+
+You could also run something a little bit more complex: 
+
+```bash
+current_date=$(date)
+echo "Today is $current_date"
+```
+
+Notes from [this resource](https://bookdown.org/yihui/rmarkdown-cookbook/eng-bash.html): 
+
+ - Running bash within rmarkdown will ignore profile files like ~/.bash_profile and ~/.bash_login, in which you may have defined command aliases or modified environment variables like the PATH variable. If you want these profile files to be executed just like when you use the terminal, you may pass the argument -l to bash via engine.opts, e.g.,
+
+```bash
+#bash, engine.opts='-l'
+echo $PATH
+```
+
+ - If you want to enable the -l argument globally for all bash chunks, you may set it in the global chunk option in the beginning of your document:`knitr::opts_chunk$set(engine.opts = list(bash = "-l"))`
+
+ - You can also pass other arguments to bash by providing them as a character vector to the chunk option engine.opts.
+
+
+## System commands within R 
+
+Note from [this resource](https://bookdown.org/yihui/rmarkdown-cookbook/eng-bash.html): Please note that bash is invoked with the R function system2(). 
+
+```r
+# list all files and directories
+system2(command = "ls")
+```
+
+We can use this to save a system output into our R workspace for later processing: 
+
+```r
+var <- system2("whoami", stdout = TRUE, stderr = TRUE)
+
+print(var)
+```
+
+You can also use `input=` for commands that will have a response from the system that needs a response, like logging in where you supply a username and then it prompts you for a password. 
+
+```r
+system('sudo -kS ls',input=readline("Enter your password: "))
+```
+
+
+## Multi-line system commands in R
+
+There is a good discussion on nuances of using system commands within R in [this stackoverflow post](https://stackoverflow.com/questions/37860616/unable-to-get-r-language-system2-command-result). 
+
+system and system2 functions are designed for simple commands, as evidenced by the separation of the command word and command arguments into separate function arguments. However that can be subverted using shell metacharacters to run more complex statements. 
+
+```r
+system('echo a b; echo c d');
+
+system2('echo',c('a','b; echo c d'));
+```
+
+At this point in the complexity it is probably worth considering writing the commands you want to run as a [bin bash script](https://phoenixnap.com/kb/write-bash-script) which is then called by R to run from system. 
+
+```r
+bash_script <- "#!/bin/bash
+# A simple Bash script
+echo pwd
+echo ls
+echo Done!"
+
+writeLines(bash_script, "bash_script.sh")
+
+system('chmod +x bash_script.sh')
+
+system2('./bash_script.sh', stdout = TRUE, stderr = TRUE)
+```
+
+We could also use the built in [terminal in the Rstudio IDE](https://support.rstudio.com/hc/en-us/articles/115010737148-Using-the-RStudio-Terminal-in-the-RStudio-IDE) to write the .sh file (using vim, saving with escape/ctrl/cmd-c and :w, closing with escape/ctrl/cmd-c and typing :q). The permissions will need to be changed with `chmod +x demo.sh`. That file can then be run with `./demo.sh`.
+
+## Responding to Bash commands from R 
+
+There is a good example in [stackoverflow here](https://stackoverflow.com/questions/32239069/invoke-a-system-command-and-pipe-a-variable-as-an-argument). 
+
+In some cases it is useful to run a command and then be able to add an additional input. For example when signing in to a server being able to respond with a password, or to provide a yes to a prompt when installing a package. The input arg to system2 will accomplish this. 
+
+`input: if a character vector is supplied, this is copied one string per line to a temporary file, and the standard input of ‘command’ is redirected to the file.`
+
+```r
+foo = c("foo", "bar")
+result = system2("cat", input = foo, stdout = TRUE)
+
+result
+```
+
+## Mixing R and bash operations 
+
+Let's save a file to disk using R: 
+
+```r
+#my_data <-  data.frame("fruits" = c("Mango","Orange","Grape","Guava","Apple"))
+
+my_data <- "Mango, Orange, Grape, Guava, Apple"
+
+write.table(my_data, file = "my_data.txt", sep = "", row.names = FALSE)
+
+read.delim(file = "my_data.txt")
+```
+
+Let's run a multi-line bash command and see the output: 
+
+```bash
+count_words=`wc -w my_data.txt`
+echo "Total words in my_data.txt is $count_words"
+```
+
+We could also run a bin bash script with commands so we can pass the output back into R for further processing: 
+
+```r
+bash_script2 <- "#!/bin/bash
+# A simple Bash script
+sed 's/a//g' my_data.txt"
+
+writeLines(bash_script2, "bash_script2.sh")
+
+system('chmod +x bash_script2.sh')
+
+my_data2 <- system2('./bash_script2.sh', stdout = TRUE, stderr = TRUE)
+```
+
+[Some behavior](https://stackoverflow.com/questions/24257271/r-using-wait-false-in-system-with-multiline-commands) is reported that when running bash scripts in R with system using the wait argument (when used for running async with R) will only wait for the last line to complete. Solutions are discussed in that article. 
+
+
+## Session memory from R and Python (bash commands)
+
+There are several different ways to access this information, with the challenge coming in that depending on the command we can get host level information, system, rsession, kubernetes session, and different units (B vs iB vs bits). 
+
+The below are various functions and approaches for determining a robust approach that most closely matches what is available via the RStudio IDE and the [Workbench Admin Dashboard](https://colorado.rstudio.com/rstudio/admin/sessions). 
+
+Notes: 
+
+ - Units: 1 MiB = 1,048,576 bytes, where mebibyte is MiB. 
+ - Default session has 2048 MB -> ~2 GB
+
+### From R: 
+
+When inside kubernetes (similarly with docker containers) in order to get the session size we need to pull from inside the cgroups. 
+
+
+All of the options: 
+
+```r
+system("cat /sys/fs/cgroup/memory/memory.stat")
+```
+
+View the total memory with: 
+
+```r
+# Total memory in session
+total = system("cat /sys/fs/cgroup/memory/memory.limit_in_bytes", intern=T)
+
+total_rounded = (((as.numeric(total)/1024)/1024)/1024) # This is GiB
+
+print(total_rounded)
+```
+
+
+View the used memory with: 
+
+```r
+# Used memory 
+used = system("cat /sys/fs/cgroup/memory/memory.usage_in_bytes", intern=T)
+
+used_rounded = (((as.numeric(used)/1024)/1024)/1024) # This is GiB
+
+print(used_rounded)
+```
+
+We can then calculate the remaining memory with: 
+
+```r
+remains <- as.numeric(total) - as.numeric(used) # this is in Bytes
+
+remains_rounded = (((remains/1024)/1024)/1024)
+
+print(remains_rounded) # This is GiB
+```
+
+
+Unfortunately the below approaches all use the hosting container, rather than the session container (IE getting 32GB for the total size rather than the 2GB specified). 
+
+```r
+system("free -t")
+```
+
+Free isn't aware it is inside a container, it is giving memory of the parent server: 
+
+```r
+system("free --mega")
+```
+
+Running top also reports something different, with 32 as the total amount of memory (showing the parent). 
+
+```r
+system("top")
+```
+
+We can also use the "garbage collector", but note that this only gives us the used memory and not the total available. 
+
+```r
+gc(verbose=TRUE)
+```
+Bringing these approaches together we can use the function created by this [stackoverflow post](https://stackoverflow.com/questions/46690665/complete-r-session-size) which parses /proc/meminfo on linux as described in [this stackoverflow post](https://stackoverflow.com/questions/6457290/how-to-check-the-amount-of-ram/6457769#6457769). 
+
+```r
+getAvailMem <- function(format = TRUE) {
+
+  gc()
+
+  if (Sys.info()[["sysname"]] == "Windows") {
+    memfree <- 1024^2 * (utils::memory.limit() - utils::memory.size())
+  } else {
+    # http://stackoverflow.com/a/6457769/6103040
+    memfree <- 1024 * as.numeric(
+      system("awk '/MemFree/ {print $2}' /proc/meminfo", intern = TRUE))
+  }
+
+  `if`(format, format(structure(memfree, class = "object_size"),
+                      units = "auto"), memfree)
+}
+
+getAvailMem()
+```
+
+Or directly parsing meminfo, per [this reference](https://www.faqcode4u.com/faq/44038/how-to-check-the-amount-of-ram-in-r): 
+
+```r
+# 1024 * as.numeric(system("grep MemFree /proc/meminfo"))
+system("grep MemFree /proc/meminfo")
+```
+
+Total amount of memory in kB that the OS thinks is available: 
+
+```r
+# 1024 * as.numeric(system("grep MemFree /proc/meminfo"))
+system("grep MemTotal /proc/meminfo")
+```
+
+```{r}
+memfree <- as.numeric(system("awk '/MemFree/ {print $2}' /proc/meminfo", intern=TRUE))
+memfree
+```
+
+
+An alternative is the [memuse package](https://cran.r-project.org/web/packages/memuse/index.html) with [git here](https://github.com/shinra-dev/memuse): 
+
+```r
+library(memuse)
+# memuse::Sys.meminfo()
+# memuse::Sys.swapinfo() 
+memuse::Sys.procmem(gcFirst = FALSE) # Our current size, matches the R Memory Usage Report. By setting gcFirst = FALSE we are not calling garbage collection prior to getting memory. 
+# memuse::Sys.cachesize()
+# memuse::Sys.cachelinesize()
+
+# Expectations: 
+#2076 MiB is expected total, 0.2721055 GB
+#1640 MiB remaining
+# 1 MiB = 1,048,576 bytes
+
+```
+
+Unfortunately it is reporting the parent container again: 
+
+```r
+memuse::Sys.meminfo(compact.free = FALSE)
+```
+
+
+We can also try using [lobstr](https://lobstr.r-lib.org/): 
+
+```r
+library(lobstr)
+
+lobstr::mem_used()
+```
+
+
+```r
+usage <- function() {
+    m1 <- sum(gc(FALSE)[, "(Mb)"])
+    m2 <- as.double(system(paste("ps -p", Sys.getpid(), "-o pmem="), intern = TRUE))
+    c(`gc (MiB)` = m1, `ps (%)` = m2)
+}
+usage()
+```
+
+
+### From Python (using reticulate but would also work from another IDE, for example Jupyter): 
+
+```r
+library(reticulate)
+```
+
+Note this approach is using free, which shows the hosting container's memory, but the same approach as used in R above using cgroups can be applied. 
+
+
+```python
+import os
+os.system("free")
+```
+
+## Too Long Didn't Read (TLDR)
+
+TLDR: Read [the excellently written r-bloggers post here](https://www.r-bloggers.com/2021/09/how-to-use-system-commands-in-your-r-script-or-package/). 
+
+Commands to reference: 
+
+ - [system](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/system)
+ - [system2](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/system2)
+ - [commandArgs](https://stat.ethz.ch/R-manual/R-devel/library/base/html/commandArgs.html)
+ - [shell](https://www.rdocumentation.org/packages/base/versions/3.6.2/topics/system)
+
+Other references: 
+
+ - https://www.r-bloggers.com/2021/09/how-to-use-system-commands-in-your-r-script-or-package/ 
+ - https://bash-intro.rsquaredacademy.com/r-command-line.html
+ - https://bookdown.org/yihui/rmarkdown-cookbook/eng-bash.html
+ - https://wetlandsandr.wordpress.com/2018/09/15/integrating-bash-and-r/
+
+### Resources
+
+Learn more about memory profiling: [http://adv-r.had.co.nz/memory.html#memory-profiling](http://adv-r.had.co.nz/memory.html#memory-profiling)
+
+Within a RStudio/Posit products from the admin side there are some additional tools that can be handy: 
+
+ - [https://support.rstudio.com/hc/en-us/articles/360046919174](https://support.rstudio.com/hc/en-us/articles/360046919174)
+ - [https://support.rstudio.com/hc/en-us/articles/360044800273](https://support.rstudio.com/hc/en-us/articles/360044800273)
+ - [https://support.rstudio.com/hc/en-us/articles/1500005616261-Understanding-Memory-Usage-in-the-RStudio-IDE](https://support.rstudio.com/hc/en-us/articles/1500005616261-Understanding-Memory-Usage-in-the-RStudio-IDE)
+ - [http://adv-r.had.co.nz/memory.html](http://adv-r.had.co.nz/memory.html)
+ - [https://stackoverflow.com/questions/46690665/complete-r-session-size](https://stackoverflow.com/questions/46690665/complete-r-session-size)
+ - Read about what ubuntu load is: [https://www.brendangregg.com/blog/2017-08-08/linux-load-averages.html](https://www.brendangregg.com/blog/2017-08-08/linux-load-averages.html)
+ - [https://stackoverflow.com/questions/53333858/how-to-clean-up-r-memory-without-the-need-to-restart-r-session](https://stackoverflow.com/questions/53333858/how-to-clean-up-r-memory-without-the-need-to-restart-r-session)
+ - [https://github.com/rstudio/rstudio/issues/9353](https://github.com/rstudio/rstudio/issues/9353)
+ - [https://engineering.linkedin.com/blog/2016/08/don_t-let-linux-control-groups-uncontrolled](https://engineering.linkedin.com/blog/2016/08/don_t-let-linux-control-groups-uncontrolled)
+
+

@@ -1,0 +1,281 @@
+---
+title: "Microsoft 365 / Sharepoint and R" 
+description: "Connecting to resources in Microsoft 365 / Sharepoint"
+author: "Lisa"
+date: "2023-07-14"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+
+# ms365_exploration
+
+> :warning: This is now outdated. Please refer to [this article](https://solutions.rstudio.com/r/data/microsoft365/) and the [Microsoft365R package documentation](https://github.com/Azure/Microsoft365R) developed by [Hong Ooi](https://github.com/hongooi73) instead for up-to-date information. 
+
+## Introduction
+
+Microsoft 365 is a subscription extension of the Microsoft Office product line with cloud hosting support. Microsoft 365 uses Azure Active Directory (Azure AD) for user authentication and application access through developed APIs. The Microsoft supported method for interfacing with R developed content is with the [Microsoft365R](https://github.com/Azure/Microsoft365R) package which was developed by Hong Ooi and has extensive documentation. It supports access to Teams, SharePoint Online, Outlook, and OneDrive.
+
+## Summary 
+
+> :warning: Discussion between the developers and the Global Azure Administration team about the content and security requirements within your organization should determine which of the approaches should be supported. 
+
+There are four main authentication approaches supported by [Microsoft365R](https://github.com/Azure/Microsoft365R). Note that multiple approaches can be supported at the same time.
+
+
+| **Method**                            | **auth_type**        | **Permissions** | **Capability**                  |
+|---------------------------------------|----------------------|----------------|---------------------------------|
+| **User sign-in flow: Default**       | default | User           | Interactive only (local IDE and Workbench, interactive Shiny content)                |
+| **User sign-in flow: Device Code**    | device_code | User           | Interactive only (local IDE and Workbench)                |
+| **Service principal / Client secret** | client_credentials   | Application    | Interactive and non-interactive (same as above plus scheduled content) |
+| **Embedded credentials**              | resource_owner       | User           | Interactive and non-interactive (same as above plus scheduled content) |
+
+Authentication for [Microsoft365R](https://github.com/Azure/Microsoft365R) is through Microsoft's Azure cloud platform through a registered [application](https://docs.microsoft.com/en-us/azure/active-directory/develop/app-objects-and-service-principals) with [appropriate assigned permissions](https://github.com/Azure/Microsoft365R/blob/master/inst/app_registration.md) in order to obtain ['OAuth 2.0' tokens](https://github.com/Azure/AzureAuth). 
+
+### Administration Overview
+
+Depending on your organization's security policy some steps may require support from your Azure Global Administrator. 
+
+**User Sign-in Flow: Default** 
+
+A custom app can be created or the default app registration "d44a05d5-c6a5-4bbb-82d2-443123722380" that comes with the [Microsoft365R](https://github.com/Azure/Microsoft365R) package can be used. The user permissions will need to be enabled as detailed in [the app registrations page](https://github.com/Azure/Microsoft365R/blob/master/inst/app_registration.md). Depending on your organization's security policy, access to your tenant may need to be granted by an Azure Global Administrator. Additionally Redirect URLs will need to be added through Azure under `App Registrations` -\> `select your app` -\> `Authentication` -\> `Platform configurations` -\> `Mobile and desktop applications` -\>`Add URI` as well as also enabling `nativeclient`.
+
+For adding Redirect URLs, which will give a typical web-app authentication experience for interactive applications: 
+
+- For the desktop RStudio IDE the URL is: `http://localhost:1410/`.
+- For content hosted in shinyapps.io this would be of the form `https://youraccount.shinyapps.io/appname` (including the port number if specified).
+- A SSL certificate will be required for non-local connections. This means that the Connect and Workbench URLs will need to be HTTPS. A wildcard could be used instead of adding the Redirect URL for each piece of content/user where appropriate for server-wide access. 
+
+**User Sign-in Flow: Device Code**
+
+In addition to user level app permissions outlined above the device code workflow option will need to be enabled. 
+
+Enabling the device code workflow is through the App Registration dashboard in Azure -\> `click on the created app` -\> `Authentication` -\> `Allow public client flows` and setting `Enable the following mobile and desktop flows` to `yes`. The device code workflow does not need Redirect URLs, instead providing a code and a link for the developer to access in a separate browser window (or even on a separate device) for sign-in. 
+
+**Service Principal / Client Secret**
+
+A custom app will need to be registered in Azure with Application permissions. The permissions can be based off of the [user permissions](https://github.com/Azure/Microsoft365R/blob/master/inst/app_registration.md) but can be assigned as needed for the application and to comply with any security restrictions. 
+
+Application permissions are more powerful than user permissions so it is important to emphasize that exposing the client secret directly should be avoided. As a control using environmental variable's for storing the client secret is recommended. Starting with version 1.6, RStudio Connect allows [Environment Variables](https://docs.rstudio.com/connect/admin/security-and-auditing/#application-environment-variables). The variables are encrypted on-disk, and in-memory.
+
+-   This can be done at the project level with [securing deployment](https://db.rstudio.com/best-practices/deployment/) through the [Connect UI](https://support.rstudio.com/hc/en-us/articles/228272368-Managing-your-content-in-RStudio-Connect). 
+
+
+**Embedded Credentials**
+
+A custom app will need to be registered in Azure with User permissions as specified in [the app registrations page](https://github.com/Azure/Microsoft365R/blob/master/inst/app_registration.md). Depending on your organization's security policy, access to your tenant may need to be granted by an Azure Global Administrator. 
+
+The credentials being embedded can be a user or a service account, as long as access to the desired content inside Microsoft 365 has been granted. Creating service accounts per content is recommended to enable faster troubleshooting and easier collaboration. As a control the Username / Password should never be exposed directly in the code, instead using [Environment Variables](https://docs.rstudio.com/connect/admin/security-and-auditing/#application-environment-variables). The variables are encrypted on-disk, and in-memory. 
+
+-   This can be done at the project level with [securing deployment](https://db.rstudio.com/best-practices/deployment/) through the [Connect UI](https://support.rstudio.com/hc/en-us/articles/228272368-Managing-your-content-in-RStudio-Connect). 
+
+
+## Authentication Examples
+
+### User Sign-in Flow: Default
+
+The user sign-in flow option provides the typical web browser authentication experience. A user will need to be available to interact with the authentication pop-up in order to which makes this an option for interactive applications (such as the local RStudio IDE, Workbench, or an interactive Shiny app), but not applicable for scheduled content. The details are discussed in [the auth vignette](https://cran.r-project.org/web/packages/Microsoft365R/vignettes/auth.html). 
+
+```r
+library(Microsoft365R)
+
+site_url = MySharepointSiteURL
+app = MyApp
+
+site <- get_sharepoint_site(site_url = site_url, app = app)
+```
+
+### User Sign-in Flow: Device Code
+
+In some interactive cases it may be easier to use the device code flow where the user is prompted with a code and a link which is opened in a separate screen for logging in. For example for using a Workbench instance that was deployed without an SSL certificate. This does require interaction from the user and as such will not be applicable for scheduled content nor hosted content. The details are discussed in [the auth vignette](https://cran.r-project.org/web/packages/Microsoft365R/vignettes/auth.html). 
+
+```r
+library(Microsoft365R)
+
+site_url = MySharepointSiteURL
+app = MyApp
+
+site <- get_sharepoint_site(site_url = site_url, app=app, auth_type="device_code")
+```
+
+### Service Principal / Client Secret
+
+Content in a non-interactive context (such as scheduled reports) won't have a user account available for interactive authentication. There are several approaches outlined in [the vignette](https://cran.r-project.org/web/packages/Microsoft365R/vignettes/scripted.html), with the Service Principal via using a Client Secret discussed in this section being the Microsoft recommended approach. 
+
+ - Application permissions are more powerful than user permissions so it is important to emphasize that exposing the client secret directly should be avoided. Instead the recommended approach is to store it as an [Environment Variable](https://docs.rstudio.com/connect/admin/security-and-auditing/#application-environment-variables) which can be done  through the [Connect UI](https://support.rstudio.com/hc/en-us/articles/228272368-Managing-your-content-in-RStudio-Connect).
+ - Use of the Microsoft developed package [AzureAuth](https://github.com/Azure/AzureAuth) may be needed for fully removing console prompt elements so a script can be run in a non-interactive context, for example by explicitly defining the token directory with `AzureAuth::create_AzureR_dir()`. 
+
+```r
+library(AzureAuth)
+library(AzureGraph)
+library(Microsoft365R)
+
+tenant = MyTenant
+site_url = MySharepointSiteURL
+app = MyApp
+
+# Add sensitive variables as environmental variables so they aren't exposed
+client_secret <- Sys.getenv("EXAMPLE_SHINY_CLIENT_SECRET")
+
+# Create auth token cache directory
+create_AzureR_dir()
+
+# Create a Microsoft Graph login
+gr <- create_graph_login(tenant, app, password=client_secret, auth_type="client_credentials")
+
+# An example of using the Graph login to connect to a Sharepoint site
+site <- gr$get_sharepoint_site(site_url)
+```
+
+### Embedded Credentials
+
+Content in a non-interactive context (such as scheduled reports) won't have a user account available for interactive authentication. There are several approaches outlined in [the vignette](https://cran.r-project.org/web/packages/Microsoft365R/vignettes/scripted.html). In cases where the additional access that comes with Application level permissions isn't appropriate for the organization's security requirements the embedded credentials approach can be used. 
+
+ - The credentials embedded will need to be granted access to the desired content and can either be a user or a service account. Working with your Azure Global Administrator to create service accounts per content is recommended to enable fast troubleshooting and easier collaboration.
+ - Sensitive variables such username / password should be embedded as [Environment Variables](https://docs.rstudio.com/connect/admin/security-and-auditing/#application-environment-variables)  so that they aren't exposed in the code directly.which can be done  through the [Connect UI](https://support.rstudio.com/hc/en-us/articles/228272368-Managing-your-content-in-RStudio-Connect). See the example [here](https://db.rstudio.com/best-practices/deployment/#credentials-inside-environment-variables-in-rstudio-connect). 
+ - Use of the Microsoft developed package [AzureAuth](https://github.com/Azure/AzureAuth) may be needed for fully removing console prompt elements so a script can be run in a non-interactive context, for example by explicitly defining the token directory with `AzureAuth::create_AzureR_dir()`. 
+
+```r
+library(AzureAuth)
+library(AzureGraph)
+library(Microsoft365R)
+
+tenant = MyTenant
+site_url = MySharepointSiteURL
+app = MyApp
+
+# Add sensitive variables as environmental variables so they aren't exposed
+user <- Sys.getenv("EXAMPLE_MS365R_SERVICE_USER")
+pwd <- Sys.getenv("EXAMPLE_MS365R_SERVICE_PASSWORD")
+
+# Create auth token cache directory, otherwise it will prompt the user on the console for input
+create_AzureR_dir()
+
+# create a Microsoft Graph login
+gr <- create_graph_login(tenant, app, 
+                    username = user, 
+                    password = pwd,
+                    auth_type="resource_owner")
+
+# An example of using the Graph login to connect to a Sharepoint site
+site <- gr$get_sharepoint_site(site_url)
+```
+
+### Troubleshooting Authentication Failures
+
+In the case of authentication failures clearing cached authentication tokens/files can be done with:
+
+```r
+library(AzureAuth)
+library(AzureGraph)
+
+tenant = MyTenant
+
+AzureAuth::clean_token_directory()
+AzureGraph::delete_graph_login(tenant="mytenant")
+```
+
+## SharePoint Examples
+
+### Microsoft365R
+
+The authentication method used in this example could be swapped out for any of the examples shown above. The documentation on [Microsoft365R](https://github.com/Azure/Microsoft365R) contains extensive examples beyond what is included below. 
+
+```r
+library(Microsoft365R)
+library(AzureGraph)
+library(AzureAuth)
+
+site_url = MySharepointSiteURL
+tenant = MyTenant
+app = MyApp
+drive_name = MyDrive # For example by default this will likely be "Documents"
+file_src = MyFileName.TheExtension
+
+# Add sensitive variables as environment variables so they aren't exposed
+client_secret <- Sys.getenv("EXAMPLE_SHINY_CLIENT_SECRET")
+
+# Create auth token cache directory, otherwise it will prompt the the console for input
+create_AzureR_dir()
+
+# Create a Microsoft Graph login
+gr <- create_graph_login(tenant, app, password=client_secret, auth_type="client_credentials")
+
+# An example of using the Graph login to connect to a SharePoint site
+site <- gr$get_sharepoint_site(site_url)
+
+# An example using the SharePoint site to get to a specific drive
+drv <- site$get_drive(drive_name)
+
+# Download a specific file
+drv$download_file(src = file_src, dest = "tmp.csv", overwrite = TRUE)
+
+# Retrieve lists of the different types of items in our sharepoint site. Documents uploaded under the 'Documents' drive are retrieved with list_files(). 
+drv$list_items()
+drv$list_files() 
+drv$list_shared_files()
+drv$list_shared_items()
+
+# Files can also be uploaded back to SharePoint
+drv$upload_file(src = file_dest, dest = file_dest)
+```
+
+### Pins
+
+Microsoft resources can be used for hosting data in pins format using [board_ms365() from pins](https://pins.rstudio.com/reference/board_ms365.html). The authentication method used in this example could be swapped out for any of the examples shown above. 
+
+```r
+library(Microsoft365R)
+library(pins)
+
+site_url = MySite
+app=MyApp
+
+# Create a Microsoft Graph login
+site <- get_sharepoint_site(site_url = site_url, app=app, auth_type="device_code")
+
+# An example getting the default drive 
+doclib <- site$get_drive()
+
+# Connect ms365 as a pinned board. If this folder doesn't already exist it will be created on execution. 
+board <- board_ms365(drive = doclib, "general/project1/board")
+
+# Write a dataset as a pin to Sharepoint
+board %>% pin_write(iris, "iris", description = "This is a test")
+
+# View the metadata of the pin we just created 
+board %>% pin_meta("iris")
+
+# Read the pin
+test <- board %>% pin_read("iris")
+```
+
+## Other Microsoft Related Resources
+
+There are a few cases not covered in this article where the below resources may be useful: 
+
+ - For user level authentication into servers refer to the [Marketplace offering](https://azuremarketplace.microsoft.com/en-us/marketplace/apps/aad.rstudioconnect?tab=Overview) and the [Connect documentation](https://docs.rstudio.com/connect/admin/authentication/saml-based/okta-saml/#idp-config).
+
+ - For Python users the [Microsoft REST API](https://github.com/vgrem/Office365-REST-Python-Client) is the Microsoft developed method with [examples](https://github.com/vgrem/Office365-REST-Python-Client/tree/master/examples/sharepoint/files).
+
+ - As a last resort, mapping SharePoint, OneNote, or other systems as a network drive to the hosting server could be considered, using a program such as [expandrive](https://www.expandrive.com/onedrive-for-linux/). 
+
+
+## End
+
+On the off chance that anyone makes it to the end this article got a chuckle out of me and may be relatable: <https://www.theregister.com/2022/07/15/on_call/>
+
+
+

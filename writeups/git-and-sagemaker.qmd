@@ -1,0 +1,81 @@
+---
+title: "Problems with git credential persistence when in the cloud" 
+description: "This simple trick will save you so much time"
+author: "Lisa"
+date: "2023-08-29"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+image: "img/"
+draft: false
+toc: true
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+This is a random trick that took me longer than I care to admit to figure out - and wanted to squirrel it away so it's easy to find in the future! 
+
+## Problem when on Linux:
+
+> In general gitcreds doesn't work well on linux (which has led to this git issue [(Ship our own credential helper on Linux · Issue #47 · r-lib/gitcreds](https://github.com/r-lib/gitcreds/issues/47) ). There is an excellent blog post that is very useful that goes deeper into what is going on: [Notes from a data witch - Managing GitHub credentials from R, difficulty level linux](https://blog.djnavarro.net/posts/2021-08-08_git-credential-helpers/)    
+
+## Problem when on Sagemaker: 
+
+> Additionally, on Sagemaker things like credentials will be by default stored to the ephemeral EC2 instance and lost when the session is closed. A different method needs to be pursued in order for the token to persist.
+
+## TLDR Solution: 
+
+Configure the global git to cache instead of store the credentials to a local file (from bash/terminal):  
+`git config --global credential.helper 'store --file ~/.my-credentials'`
+
+## Testing 
+
+I'll add a disclaimer that it is similar to the .Renviron approach where the credentials would be stored as plain text, however to a location chosen by the user.
+
+Load libraries:
+
+```
+library(usethis) 
+library(gitcreds) 
+library(gh) 
+library(credentials)
+```
+ 
+Configure the global git to cache instead of store the credentials to a local file (from bash/terminal):  
+`git config --global credential.helper 'store --file ~/.my-credentials'`  
+
+From the documentation:
+  
+> The “store” mode saves the credentials to a plain-text file on disk, and they never expire. This means that until you change your password for the Git host, you won’t ever have to type in your credentials again. The downside of this approach is that your passwords are stored in cleartext in a plain file in your home directory. The other options involve needing to change the root container to include alternative git credential helpers (libsecret or gcm core) which as far as I can tell are not currently available and would be something I'd recommend reaching out to Amazon about as they control that image.
+
+
+Generate the PAT:  
+  
+
+`usethis::create_github_token()`
+
+
+Copy the generated PAT to your clipboard. Provide the PAT to this function when asked for it:  
+  
+
+`gitcreds::gitcreds_set()`
+
+
+Check that it stored with:  
+  
+
+`gitcreds_get()`
+
+## Alternatives 
+
+The old way "store a PAT as the `GITHUB_PAT` environment variable in `.Renviron.`" is typically what is recommended as being more compatible with linux if you are able to switch back to it, but it can present a security issue. We've also commonly seen folks using the `gh` package for generating PATs like in [Managing Personal Access Tokens](https://gh.r-lib.org/articles/managing-personal-access-tokens.html)  
+ 
+Alternatively, there are some git config options from the terminal. See: [Chapter 9 Personal access token for HTTPS | Happy Git and GitHub for the useR](https://happygitwithr.com/https-pat.html?q=env#pat-doesnt-persist-on-linux)
+
+

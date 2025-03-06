@@ -1,0 +1,184 @@
+---
+title: "Publish and version your models with Vetiver" 
+description: "This is a minimal example of the ML development workflow in R using Vetiver and the Posit Pro products."
+author: "Lisa"
+date: "2023-01-25"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+
+This is a minimal example of the ML development workflow in R using Vetiver and the Posit Pro products.
+
+Favorite resources:
+
+-   Vetiver: <https://vetiver.rstudio.com/>
+-   Vetiver Getting Started: <https://vetiver.rstudio.com/get-started/version.html>
+-   Blog post: <https://www.rstudio.com/blog/announce-vetiver/>
+-   Connect documentation: <https://docs.posit.co/connect/user/vetiver/>
+
+## The steps:
+
+-   1.  create a deployable vetiver model: <https://vetiver.rstudio.com/get-started/>
+
+-   2.  publish and version your model: <https://vetiver.rstudio.com/get-started/version.html>
+
+-   3.  deploy your model as a REST API: <https://vetiver.rstudio.com/get-started/deploy.html>
+
+## In action
+
+Bike Predict (R): <https://solutions.posit.co/gallery/bike_predict/> Bike Predict (Python): <https://github.com/sol-eng/bike_predict_python>
+
+Following steps outline in: <https://vetiver.rstudio.com/get-started/version.html>
+
+## Train a model
+
+```r
+library(tidymodels)
+
+car_mod <-
+    workflow(mpg ~ ., linear_reg()) %>%
+    fit(mtcars)
+```
+
+## Create a vetiver model
+
+```r
+library(vetiver)
+v <- vetiver_model(car_mod, "lisa.anders/cars_mpg_model")
+v
+```
+
+## Store and version your model
+
+Store secrets in your environment so they aren't exposed in your code directly with `usethis::edit_r_environ()`. Pinned to: <https://colorado.posit.co/rsc/connect/#/apps/b858985c-4e7f-4e05-be35-1bb6f21c9cd4/access>
+
+auth = "envvar" uses environment variables CONNECT_API_KEY and CONNECT_SERVER.
+
+```r
+library(pins)
+model_board <- board_connect(auth = "envvar") # authenticates to Connect via environment variables
+vetiver_pin_write(model_board, v)
+```
+
+To read the vetiver model object from your board, use `model_board %>% vetiver_pin_read("cars_mpg")`.
+
+## Create a REST API for deployment
+
+To start a server using this object, pipe (%\>%) to `pr_run(port = 8080)` or your port of choice.
+
+For RStudio Connect, you can deploy your versioned model with a single function, either vetiver_deploy_rsconnect() for R or vetiver.deploy_rsconnect() for Python. For more on these options, see the [Connect documentation for using vetiver](https://docs.posit.co/connect/user/vetiver/).
+
+```r
+# Run while developing
+
+# library(plumber)
+# pr() %>%
+#   vetiver_api(v) %>% 
+#   pr_run(port = 8080)
+
+# system2("ls")
+```
+
+## Deploy to Connect
+
+API deployed to: <https://colorado.posit.co/rsc/connect/#/apps/01ef1a23-3cd3-459f-b5e1-9c002104c065/access>
+
+```r
+vetiver_deploy_rsconnect( 
+     model_board, 
+     "lisa.anders/cars_mpg_model", 
+     predict_args = list(debug = TRUE), 
+     #server="",
+     account = "lisa.anders" 
+     )
+```
+
+## Predict from your model endpoint
+
+```r
+endpoint <- vetiver_endpoint("https://server.url.co/rsc/content/01ef1a23-3cd3-459f-b5e1-9c002104c065/predict")
+
+apiKey <- Sys.getenv("CONNECT_API_KEY")
+
+
+new_car <- tibble(cyl = 4,  disp = 200,
+                  hp = 100, drat = 3,
+                  wt = 3,   qsec = 17,
+                  vs = 0,   am = 1,
+                  gear = 4, carb = 2)
+
+
+time_start <- Sys.time()
+
+predict(endpoint, new_car, httr::add_headers(Authorization = paste("Key", apiKey)))
+
+time_end <- Sys.time()
+
+time_diff <- difftime(time_end, time_start)
+```
+
+## Compute metrics
+
+```r
+library(vetiver)
+library(tidyverse)
+cars <- read_csv("https://vetiver.rstudio.com/get-started/new-cars.csv")
+original_cars <- slice(cars, 1:14)
+
+original_metrics <-
+    augment(v, new_data = original_cars) %>%
+    vetiver_compute_metrics(date_obs, "week", mpg, .pred)
+
+original_metrics
+
+```
+
+Specify the metrics you want to have for monitoring your model over time.
+
+## Pin the metrics
+
+Create a new board:
+
+```r
+model_board <- board_connect(auth = "envvar") # authenticates to Connect via environment variables
+
+model_board %>% pin_write(original_metrics, "lisa.anders/tree_metrics")
+```
+
+Later we will want to update it so we can look back at how it is changing over time:
+
+```r
+# dates overlap with existing metrics:
+new_cars <- slice(cars, -1:-7)
+new_metrics <-
+    augment(v, new_data = new_cars) %>%
+    vetiver_compute_metrics(date_obs, "week", mpg, .pred)
+
+model_board %>%
+    vetiver_pin_metrics(new_metrics, "lisa.anders/tree_metrics", overwrite = TRUE)
+```
+
+## Visualize performance over time
+
+```r
+library(ggplot2)
+monitoring_metrics <- model_board %>% pin_read("lisa.anders/tree_metrics")
+vetiver_plot_metrics(monitoring_metrics) +
+    scale_size(range = c(2, 4))
+```
+
+
+

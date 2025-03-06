@@ -1,0 +1,218 @@
+---
+title: "Using the remote CLI with package manager" 
+description: "Now that we can do ALL the things remotely lets go wild!"
+author: "Lisa"
+date: "2025-01-22"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+toc: true
+image: "img/"
+draft: false
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+### Overview
+
+Remote CLI use: <https://docs.posit.co/rspm/admin/admin-cli/#cli-remote-use>
+
+> The entire admin CLI is now available for use remotely, with the exception of the offline, online and cluster commands. API tokens can be generated with the new global:admin scope to allow full access to the CLI.
+
+In order to use the admin CLI remotely you need an admin to create an API token for you (`rspm create token`)
+
+The admin will likely need to follow these steps:
+
+-   Enable the `Authentication.APITokenAuth` configuration setting and restart the Package Manager service.
+-   Create a token using the `rspm create token` command. For example `rspm create token --scope=global:admin --expires=never` 
+-   Give the token and the full address of the server (including the port if not using a default port like 80/443) to the remote user.
+
+As a user these are needed:
+
+-   Download the Package Manager CLI, ensuring that the CLI version matches the server version.
+-   Set an environment variable named `PACKAGEMANAGER_TOKEN` with the value of the token.
+-   Set an environment variable named `PACKAGEMANAGER_ADDRESS` with the address of the Package Manager server.
+
+Some other commands useful to know about:
+
+-   `rspm encrypt generate` for creating the encryption token from the CLI before setting up the server.
+-   Generate a bootstrap key programmatically: <https://docs.posit.co/rspm/admin/appendix/bootstrap/>
+-   `rspm create token --scope=sources:write --description 'meatballhat is testing' --sources='*' --expires=1h` generates an API key for one hour
+-   `rspm create token --description="user A" --sources=local-src --expires=30d --scope=sources:write` creates a token for adding binary packages remotely
+-   useful example showing setup instructions for a package manager instance: <https://github.com/rstudio/evaluations/blob/main/src/scripts/config_rspm.sh>
+-   here's the way we included the rspm cli in the container images: <https://github.com/rstudio/sol-eng-demo-server/pull/110/files>
+-   list of all commands: <https://docs.posit.co/rspm/admin/appendix/cli/rspm/>
+
+### Environment set-up
+
+Current environment token:
+
+``` bash
+export PACKAGEMANAGER_ADDRESS=<redacted>
+
+export PACKAGEMANAGER_TOKEN=<redacted>
+```
+
+### Running commands
+
+As a user we can test our access with something like this:
+
+```bash
+# Download the Package Manager CLI, ensuring that the CLI version matches the server version. For example RSPM_SERVER_VERSION=2024.04.2-29 or RSPM_SERVER_VERSION=2023.12.0-13, find the version through the UI or with rspm --version
+export RSPM_SERVER_VERSION=2024.08.2-9
+export RSPM_SERVER_VERSION=2024.08.4-10
+export RSPM_SERVER_VERSION=2024.11.0-7
+curl -o rspm -f https://cdn.posit.co/package-manager/linux/amd64/rspm-cli-linux-${RSPM_SERVER_VERSION}
+chmod +x rspm
+
+# Set an environment variable named PACKAGEMANAGER_TOKEN with the value of the token.
+export <redacted>
+echo $PACKAGEMANAGER_TOKEN
+
+# Set an environment variable named PACKAGEMANAGER_ADDRESS with the address of the Package Manager server. 
+export PACKAGEMANAGER_ADDRESS=<redacted>
+echo $PACKAGEMANAGER_ADDRESS
+
+# Test it! 
+./rspm verify
+./rspm list tokens
+
+
+# Test it! 
+./rspm list blocklist-rules
+
+# Test it! Need a package to try to push to test these
+./rspm add --source=internal --path=lisaPackageManagerDemo_0.0.1.tar.gz
+```
+
+Let's create a new repository for blocked packages that is inspired by <https://github.com/rstudio/evaluations/blob/main/src/scripts/config_rspm.sh> 
+
+First we should create our .txt files with the desired subset of packages: 
+
+```bash
+# curated cran
+echo -e 'dplyr\nggplot2\narrow\nlubridate\njsonlite\nreadxl\nhaven\ngdata\nigraph\ncommonmark' > package_subset_r.csv
+
+# curated pypi
+echo -e 'plotnine\npolars\npillow\ngreat-tables' > package_subset_py.txt
+
+export snapshot=2025-01-22
+```
+
+```bash
+# blocked packages -- R
+./rspm create source --type=curated-cran --name=blocked-packages-r 
+./rspm create blocklist-rule --source=blocked-packages-r --vulns
+./rspm create blocklist-rule --source=blocked-packages-r --package-name=ggplot2 --description="Installation of 'ggplot2' is blocked"
+./rspm update --source=blocked-packages-r --file-in='package_subset_r.csv' --commit --snapshot="${snapshot}"
+./rspm create repo --name=blocked-r --description="Curated CRAN with vulnerability blocking enabled. Downloads of ggplot2 are also disallowed."
+./rspm subscribe --repo=blocked-r --source=blocked-packages-r
+
+# blocked packages -- python
+./rspm create source --name=blocked-packages-python --type=curated-pypi
+./rspm create blocklist-rule --source=blocked-packages-python --vulns
+./rspm create blocklist-rule --source=blocked-packages-python --package-name=plotnine --description="Installation of 'plotnine' is blocked."
+./rspm update --source=blocked-packages-python --file-in=package_subset_py.txt --snapshot="${snapshot}" --commit
+./rspm create repo --name=blocked-python --type=python --description="Curated PyPI with vulnerability blocking enabled. Downloads of plotnine are also disallowed."
+./rspm subscribe --repo=blocked-python --source=blocked-packages-python
+```
+
+Let's check for package versions that violate the blocklist rule for blocking vulnerabilities: 
+
+```bash
+#rspm test blocklist-rules --repo=[repo name] --package-name=[package name] --version=[version]
+./rspm test blocklist-rules --repo=blocked-python --package-name=pillow
+./rspm test blocklist-rules --repo=blocked-python --package-name=pillow --version=10.0.1
+```
+
+Let's set up a cran that has all vulnerable packages blocked (rather than a subset). This wasn't possible until the newest release. 
+
+```bash
+./rspm create repo --name=cran-vulns-blocked --type=r --description='Access CRAN packages with known vulnerabilities blocked'
+./rspm subscribe --repo=cran-vulns-blocked --source=cran
+./rspm create blocklist-rule --repo=cran-vulns-blocked --vulns
+```
+
+Let's now do the same for pypi: 
+
+```bash
+./rspm create repo --name=pypi-vulns-blocked --type=python --description='Access PyPi packages with known vulnerabilities blocked'
+./rspm subscribe --repo=pypi-vulns-blocked --source=pypi
+./rspm create blocklist-rule --repo=pypi-vulns-blocked --vulns
+```
+
+Let's check for package versions that violate the blocklist rule for blocking vulnerabilities: 
+
+```bash
+#rspm test blocklist-rules --repo=[repo name] --package-name=[package name] --version=[version]
+./rspm test blocklist-rules --repo=cran-vulns-blocked --package-name=jsonlite --version=1.8.7
+./rspm test blocklist-rules --repo=pypi-vulns-blocked --package-name=pillow --version=10.0.1
+```
+
+Let's create a blocklist rule to block a specific package: 
+
+```bash
+./rspm create blocklist-rule --repo=cran-vulns-blocked --package-name=ggplot2 --description="Installation of 'ggplot2' is blocked"
+./rspm test blocklist-rules --repo=cran-vulns-blocked --package-name=ggplot2
+```
+
+Remove a repository (oops!): 
+
+```bash
+./rspm delete repo --name=pypi-vulns-blocked
+```
+
+Try to download a blocked package: 
+
+```r
+library(remotes)
+options(repos = c(CRAN = "https://pkg.demo.posit.team/cran-vulns-blocked/__linux__/noble/latest"))
+install_version("jsonlite", "1.8.7")
+```
+
+or we can instead curl it to see what happens: 
+
+```bash
+curl https://pkg.demo.posit.team/cran-vulns-blocked/latest/src/contrib/Archive/jsonlite/jsonlite_1.8.7.tar.gz
+```
+
+### rosv
+
+rosv r package: <https://github.com/cran/rosv> 
+
+```r
+library(rosv)
+
+# Pull the entire set of PyPI vulnerability data
+pkg_vul <- osv_query(ecosystem = 'PyPI', all_affected = FALSE)
+pypi_vul <- create_osv_list(pkg_vul, as.data.frame = FALSE, NA_value = ' ')
+
+# Pull the entire set of cran vulnerability data
+pkg_vul <- osv_query(ecosystem = 'CRAN', all_affected = FALSE)
+cran_vul <- create_osv_list(pkg_vul, as.data.frame = FALSE, NA_value = ' ')
+
+# Scan an R project 
+df <- osv_scan('r_project')
+```
+
+### r-advisory-database
+
+r-advisory-database: <https://github.com/RConsortium/r-advisory-database> 
+
+### Troubleshooting 
+
+> "unsupported protocol scheme """ 
+
+This error is due to the missing `https://` in front of the URL. Add that and try again. 
+
+> "Error: unable to get the claims from the token: signature is invalid" 
+
+Was the package manager server recently updated? The encryption key changes between versions (is re-generated). It is used for all secret management in PPM, including JWT tokens, encrypted configuration values like database passwords, and credentials for git builders. Logic needs to be added to manage the key across versions if you want things like API keys to persist. Follow the docs [here](https://docs.posit.co/rspm/admin/appendix/encryption/) and consider setting the supported env var `PACKAGEMANAGER_ENCRYPTION_KEY`. 
+
+

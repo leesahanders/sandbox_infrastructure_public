@@ -1,0 +1,208 @@
+---
+title: "Accessing data in Azure Data Lake (delta files)"
+description: "This is some work I did exploring how to access the underlying databricks data storage, without having to go through databricks"
+author: "Lisa"
+date: "2024-01-11"
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: source
+image: "img/"
+draft: false
+toc: true
+freeze: true
+filters:
+   - lightbox
+lightbox: auto
+categories:
+  - code
+---
+
+This is some work I did exploring how to access the underlying databricks data storage, without having to go through databricks. Wanted to squirrel this away so it's easy to find in the future! 
+
+## Azure Data Lake
+
+### Set up
+
+Landing page for Azure: <[https://portal.azure.com/](https://portal.azure.com/) >
+
+Follow this article: <[https://learn.microsoft.com/en-us/azure/storage/blobs/create-data-lake-storage-account](https://learn.microsoft.com/en-us/azure/storage/blobs/create-data-lake-storage-account) >
+
+The trick: ADL isn't it's own separate category, it gets created as part of a storage account.
+
+Steps:
+
+1. Go to storage account
+    
+2. Create and give it a name
+    
+3. Select: LRS
+    
+4. Switch to premium: block blobs
+    
+5. Change to hierarchical blob
+    
+6. Set tags:
+    
+
+- rs:owner
+    
+- rs:project = soleng
+    
+- rs:environment = dev
+    
+
+7. Once in just need access keys or shared access signature in order to gain access
+    
+
+### Add data
+
+You can add data manually by creating a container and then using the upload icon.
+
+![image](https://gist.github.com/assets/70042237/750bd967-979a-4220-a1f2-9cf5118dfcdd)
+
+## Authentication
+
+Access your authentication details through the Access Keys or Shared Access Signature links on the left. I prefer Access Keys since they are easier to use.
+
+For authentication from an R script we’ll be using [https://github.com/Azure/AzureStor](https://github.com/Azure/AzureStor)
+
+You’ll need to know:
+
+- The Blob endpoint for your Azure Data Lake storage
+    
+- An Access Key (this can also be done with a Shared Access Signature)
+    
+
+```
+library(AzureStor)
+
+blob_endpoint <- "https://REDACTED.blob.core.windows.net/"
+
+bl_endp_key <- storage_endpoint(blob_endpoint, key="REDACTED")
+
+# List containers and files in containers
+list_storage_containers(bl_endp_key)
+cont1 <- storage_container(bl_endp_key, "container1")
+list_storage_files(cont1)
+
+# Download a file
+storage_download(cont1, "/crm_call_center_logs.parquet")
+
+# Upload a file 
+storage_upload(cont1, "crm_call_center_logs.parquet", "newdir/crm_call_center_logs.parquet")
+```
+
+You can also create and delete containers:
+
+```
+# Create a container
+newcont <- create_storage_container(bl_endp_key, "container3")
+
+# Create a directory in the container
+cont3 <- storage_container(bl_endp_key, "container3")
+create_storage_dir(cont3, "newdir")
+
+# Delete a container
+delete_storage_container(newcont)
+```
+
+## Reading and Writing Delta Files
+
+Delta files can be read by using the sparklyr package: [https://spark.rstudio.com/packages/sparklyr/latest/reference/spark_read_delta.html](https://spark.rstudio.com/packages/sparklyr/latest/reference/spark_read_delta.html) Thanks for the help with the magic incantation below!
+
+In order to do this we will need to manage a Spark cluster. We can run it in local mode so that we aren’t connecting to an external cluster with billing:
+
+```
+library(sparklyr)
+
+#Install a local version of Spark
+spark_install(version=3.4)
+
+# Set Spark configuration to be able to read delta tables
+conf <- spark_config()
+conf$`spark.sql.extensions` <- "io.delta.sql.DeltaSparkSessionExtension"
+conf$`spark.sql.catalog.spark_catalog` <- "org.apache.spark.sql.delta.catalog.DeltaCatalog"
+
+# For spark 3.4 
+conf$sparklyr.defaultPackages <- "io.delta:delta-core_2.12:2.4.0"
+
+# Open a connection
+sc <- spark_connect("local", version = 3.4, packages = "delta", conf = conf)
+
+# For this example we will use a built-in dataframe to save example data files, including one for delta tables
+tbl_mtcars <- copy_to(sc, mtcars, "spark_mtcars")
+
+# Write spark dataframe to disk
+spark_write_csv(tbl_mtcars,  path = "test_file_csv", mode = "overwrite")
+spark_write_parquet(tbl_mtcars,  path = "test_file_parquet", mode = "overwrite")
+spark_write_delta(tbl_mtcars,  path = "test_file_delta", mode = "overwrite")
+
+# Read dataframes into normal memory
+spark_tbl_handle <- spark_read_csv(sc, path = "test_file_csv")
+regular_df_csv <- collect(spark_tbl_handle)
+spark_tbl_handle <- spark_read_parquet(sc, path = "test_file_parquet")
+regular_df_parquet <- collect(spark_tbl_handle)
+spark_tbl_handle <- spark_read_delta(sc, path = "test_file_delta")
+regular_df_delta <- collect(spark_tbl_handle)
+
+# Disconnect
+spark_disconnect(sc)
+```
+
+You should now have normal dataframes in your regular R environment that can be used for further analytics:
+
+![image](https://gist.github.com/assets/70042237/52a8fd86-8f58-4688-87a6-7a5433d28aee)
+
+Note: For Spark 3.5 you might have success with “io.delta:delta-core_2.12:3.0.0”
+
+## Troubleshooting
+
+From R:
+
+```
+# See spark details (troubleshooting)
+spark_config()
+spark_get_java()
+spark_available_versions()
+spark_installed_versions()
+
+# See session details
+utils::sessionInfo() 
+```
+
+From bash:
+
+```
+namei -l /usr/lib/spark
+```
+
+Recommended troubleshooting: [https://spark.rstudio.com/guides/troubleshooting.html](https://spark.rstudio.com/guides/troubleshooting.html)
+
+
+## About
+
+### Azure Data Lake: [Azure Data Lake Storage Gen2 Introduction - Azure Storage](https://learn.microsoft.com/en-us/azure/storage/blobs/data-lake-storage-introduction)
+
+> Azure Data Lake Storage Gen2 is a set of capabilities dedicated to big data analytics, built on Azure Blob Storage.
+
+> Data Lake Storage Gen2 converges the capabilities of Azure Data Lake Storage Gen1 with Azure Blob Storage. For example, Data Lake Storage Gen2 provides file system semantics, file-level security, and scale. Because these capabilities are built on Blob storage, you'll also get low-cost, tiered storage, with high availability/disaster recovery capabilities.
+
+> A superset of POSIX permissions: The security model for Data Lake Gen2 supports ACL and POSIX permissions along with some extra granularity specific to Data Lake Storage Gen2. Settings may be configured through Storage Explorer or through frameworks like Hive and Spark.
+
+TLDR: Azure Data Lake is a place where data can be saved (similar to S3 buckets on Amazon).
+
+### Delta Tables: [https://docs.delta.io/latest/delta-intro.html](https://docs.delta.io/latest/delta-intro.html)
+
+> [Delta Lake](https://delta.io/) is an [open source project](https://github.com/delta-io/delta) that enables building a [Lakehouse architecture](https://databricks.com/blog/2020/01/30/what-is-a-data-lakehouse.html) on top of [data lakes](https://databricks.com/discover/data-lakes/introduction). Delta Lake provides [ACID transactions](https://docs.delta.io/latest/concurrency-control.html), scalable metadata handling, and unifies [streaming](https://docs.delta.io/latest/delta-streaming.html) and [batch](https://docs.delta.io/latest/delta-batch.html) data processing on top of existing data lakes, such as S3, ADLS, GCS, and HDFS.
+
+You can check Delta Lake releases here: [https://docs.delta.io/latest/releases.html](https://docs.delta.io/latest/releases.html)
+
+TLDR: Delta tables are a data file format, specifically used with Spark clusters (for example Databricks).
+
+
+
+
+
+
